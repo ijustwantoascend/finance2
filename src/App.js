@@ -82,7 +82,12 @@ async function callClaude(messages, system, tools=[]) {
   const body = { model:"claude-sonnet-4-6", max_tokens:1500, system, messages };
   if (tools.length) body.tools = tools;
   const r = await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
+    method:"POST", headers:{
+      "Content-Type":"application/json",
+      "x-api-key": process.env.REACT_APP_ANTHROPIC_API_KEY,
+      "anthropic-version":"2023-06-01",
+      "anthropic-dangerous-direct-browser-access":"true",
+    }, body:JSON.stringify(body),
   });
   const d = await r.json();
   return d.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"";
@@ -121,7 +126,7 @@ async function aiChat(userMsg, state, bp) {
   const recentTx = state.ledger.slice(0,5).map(e=>`${e.date} [${e.type}] ${e.label||e.category} ${e.amount} ${e.currency}`).join("\n")||"none";
   const openOrders = state.orders.filter(o=>o.status!=="delivered").length;
 
-  const sys = `You are HXN's personal finance AI — sharp, direct, data-driven. You know everything about his financial state.
+  const sys = `You are Jo's personal finance AI — sharp, direct, data-driven. You know everything about his financial state.
 
 LIVE STATE:
 - BTC price: ${bp?cu(bp):"unknown"} | Cost basis: ${cu(state.btcCostBasis)} | BTC PnL: ${cu(btcPnL)}
@@ -941,7 +946,7 @@ export default function App() {
       <div style={{ position:"sticky",top:0,zIndex:100,background:"#080808",borderBottom:"1px solid #131313" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0 20px", height:52 }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:10 }}>
-            <span style={{ fontSize:15, fontWeight:800, letterSpacing:"0.08em", color:"#F5F5F0", fontFamily:"'SF Mono',monospace" }}>HXN</span>
+            <span style={{ fontSize:15, fontWeight:800, letterSpacing:"0.08em", color:"#F5F5F0", fontFamily:"'SF Mono',monospace" }}>JJ</span>
             <span style={{ fontSize:10, color:"#2A2A2A", letterSpacing:"0.18em", textTransform:"uppercase", fontFamily:"'SF Mono',monospace" }}>Financial OS</span>
           </div>
 
