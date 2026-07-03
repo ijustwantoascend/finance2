@@ -14,7 +14,7 @@ const sb = async (path, method="GET", body=null) => {
       "Content-Type": "application/json",
       "apikey": SUPABASE_KEY,
       "Authorization": `Bearer ${SUPABASE_KEY}`,
-      "Prefer": method==="POST" ? "return=representation" : "",
+      "Prefer": "return=representation",
     },
   };
   if (body) opts.body = JSON.stringify(body);
@@ -34,9 +34,9 @@ const NAV_ITEMS    = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wall
 const NAV_ICONS    = ["◈","≡","▦","⊞","∿","◎","✦"];
 
 const HISTORICAL = {
-  "2025-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:232.24,Dating:188.05,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
-  "2025-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:0,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:145.35,Family:7.97,"Debt Repayment":0}},
-  "2025-06": { inc:6446.00, cost:1617.49, cats:{Dad:309.40,Mom:130.95,Sam:130.95,Glenn:0,Personal:205.71,Dating:231.85,Gas:61.66,Gear:363.22,Miscellaneous:140.13,Family:44.84,"Debt Repayment":0}},
+  "2026-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:232.24,Dating:188.05,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
+  "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:0,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:145.35,Family:7.97,"Debt Repayment":0}},
+  "2026-06": { inc:6446.00, cost:1617.49, cats:{Dad:309.40,Mom:130.95,Sam:130.95,Glenn:0,Personal:205.71,Dating:231.85,Gas:61.66,Gear:363.22,Miscellaneous:140.13,Family:44.84,"Debt Repayment":0}},
 };
 
 
@@ -101,24 +101,33 @@ async function callClaude(messages,system,tools=[]){
 
 async function parseTransaction(text,rates,bp){
   const today=new Date().toISOString().slice(0,10);
-  const sys=`You are a financial transaction parser for a crypto entrepreneur in Singapore/Jakarta.
-Parse natural language into structured JSON ledger entries.
-ACCOUNTS: coinbase_btc (BTC income), metamask_btc, coinbase_usdt, uob_sgd, revolut_sgd, bca_idr
-EXPENSE CATEGORIES: ${EXPENSE_CATS.join(", ")}
+  const yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);
+  const sys=`You are a financial transaction parser. Parse natural language into structured JSON.
+ACCOUNTS: coinbase_btc, metamask_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd
+EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
 RULES:
-- "revolut" → account:revolut_sgd, currency:SGD
-- "UOB" → account:uob_sgd, currency:SGD
-- "BCA","cash","tunai" → account:bca_idr, currency:IDR
-- BTC income → account:coinbase_btc, currency:BTC
-- USDT income → account:coinbase_usdt, currency:USDT
-- IDR "juta"=×1000000 "ribu"=×1000 "rb"=×1000
-- Dad/Mom/Sam/Glenn as category names
-- Today: ${today}
-Return ONLY valid JSON array, no markdown.
-[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|USD|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]`;
+- ALL expenses → revolut_sgd + SGD by default
+- "BCA" or "cash" or "tunai" → revolut_sgd still, but note it in label (we removed BCA)
+- "revolut" → revolut_sgd, SGD
+- "UOB" → uob_sgd, SGD
+- BTC income → coinbase_btc (or metamask_btc if user says metamask)
+- USDT income → coinbase_usdt (or metamask_usdt if user says metamask)
+- USD income → coinbase_usdt, USD
+- Dad/Mom/Sam/Glenn → category = that name
+- CRITICAL: date = YYYY-MM-DD always. Today = ${today}. Yesterday = ${yesterday}. Never write the word "today".
+- CRITICAL: account must never be empty or null.
+- CRITICAL: amount must be a positive number.
+Return ONLY valid JSON array. No markdown. No explanation.
+[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|USD|SGD","account":"coinbase_btc|metamask_btc|coinbase_usdt|metamask_usdt|uob_sgd|revolut_sgd","label":"...","date":"YYYY-MM-DD"}]`;
   const txt=await callClaude([{role:"user",content:text}],sys);
-  const clean=txt.replace(/```json|```/g,"").trim();
-  return JSON.parse(clean);
+  const clean=txt.replace(/```json[\s\S]*?```|```/g,"").trim();
+  const parsed=JSON.parse(clean);
+  // Sanitize: fix any "today"/"yesterday" dates that slipped through
+  return parsed.map(e=>({
+    ...e,
+    date: (e.date&&/^\d{4}-\d{2}-\d{2}$/.test(e.date)) ? e.date : today,
+    account: e.account||"revolut_sgd",
+  }));
 }
 
 async function aiChat(userMsg,state,bp,chatHistory){
@@ -137,20 +146,25 @@ LIVE STATE:
 - This month: ${cu(md.inc)} income | ${cu(md.cost)} costs | ${cp(md.margin)} margin
 - Recent: ${recentTx}
 - History: Apr $4,684/$2,416 | May $5,533/$3,075 | Jun $6,446/$1,617
+- CRITICAL: date must always be YYYY-MM-DD format, never "today". Today = ${new Date().toISOString().slice(0,10)}. Account must never be empty.
+- ALL expenses go to revolut_sgd (SGD) by default, or bca_idr (IDR) if user mentions BCA/cash
 If user describes a transaction, also output: <TRANSACTIONS>[...]</TRANSACTIONS>
 Be concise, use $ values, give real advice.`;
   return await callClaude([...chatHistory.slice(-8),{role:"user",content:userMsg}],sys);
 }
 
 async function fetchBTCPrice(){
-  const txt=await callClaude(
-    [{role:"user",content:"Current Bitcoin BTC/USD price right now. Reply with ONLY the number, no symbols."}],
-    "Return only the number requested, nothing else.",
-    [{type:"web_search_20250305",name:"web_search"}]
-  );
-  const m=txt.match(/([\d,]+(?:\.\d+)?)/);
-  if(m){const p=parseFloat(m[1].replace(/,/g,""));if(p>10000)return p;}
-  return null;
+  try{
+    const r=await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd");
+    const d=await r.json();
+    return d.bitcoin?.usd||null;
+  }catch{
+    try{
+      const r2=await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT");
+      const d2=await r2.json();
+      return parseFloat(d2.price)||null;
+    }catch{ return null; }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,7 +235,7 @@ function Dashboard({st,bp}){
   const btcPnLPct=btcCostBasis?((bp||0)-btcCostBasis)/btcCostBasis*100:0;
   const thisM=new Date().toISOString().slice(0,7);
   const md=buildMonth(thisM,ledger,bp,rates);
-  const chartData=["2025-04","2025-05","2025-06",thisM].filter((v,i,a)=>a.indexOf(v)===i).map(ym=>{
+  const chartData=["2026-04","2026-05","2026-06",thisM].filter((v,i,a)=>a.indexOf(v)===i).map(ym=>{
     const m=buildMonth(ym,ledger,bp,rates);
     return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],income:Math.round(m.inc),costs:Math.round(m.cost),net:Math.round(m.net)};
   });
@@ -344,7 +358,7 @@ function Ledger({st,bp,onDelete}){
         </select>
         <select value={monthF} onChange={e=>setMonthF(e.target.value)} style={sel}>
           <option value="all">All months</option>
-          {MONTH_KEYS.map((mk,i)=><option key={mk} value={`2025-${mk}`}>{MONTHS_SHORT[i]} 2025</option>)}
+          {MONTH_KEYS.map((mk,i)=><option key={mk} value={`2026-${mk}`}>{MONTHS_SHORT[i]} 2026</option>)}
         </select>
         <span style={{fontSize:11,color:"#333",fontFamily:"'SF Mono',monospace",alignSelf:"center"}}>{filtered.length} entries</span>
       </div>
@@ -393,7 +407,7 @@ function Ledger({st,bp,onDelete}){
 }
 
 function CalendarView({st,bp}){
-  const[year,setYear]=useState(2025);
+  const[year,setYear]=useState(2026);
   const{ledger,rates}=st;
   const thisM=new Date().toISOString().slice(0,7);
   const yearData=MONTH_KEYS.map((mk,i)=>{
@@ -745,12 +759,12 @@ function Orders({ st, bp, onUpdateOrder, onAddOrder, onDeleteOrder }) {
 
 function Analytics({st,bp}){
   const{ledger,rates}=st;
-  const chartData=["2025-04","2025-05","2025-06"].map(ym=>{
+  const chartData=["2026-04","2026-05","2026-06"].map(ym=>{
     const md=buildMonth(ym,ledger,bp,rates);
     return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],income:Math.round(md.inc),cost:Math.round(md.cost),net:Math.round(md.net),margin:Math.round(md.margin*100)};
   });
   const catTotals=EXPENSE_CATS.map(c=>{
-    const val=["2025-04","2025-05","2025-06"].reduce((s,ym)=>s+(buildMonth(ym,ledger,bp,rates).cats[c]||0),0);
+    const val=["2026-04","2026-05","2026-06"].reduce((s,ym)=>s+(buildMonth(ym,ledger,bp,rates).cats[c]||0),0);
     return{name:c,value:Math.round(val)};
   }).filter(d=>d.value>0).sort((a,b)=>b.value-a.value);
   const COLORS=["#F87171","#FB923C","#FBBF24","#4ADE80","#60A5FA","#A78BFA","#F472B6","#34D399","#818CF8","#FCD34D","#6EE7B7"];
@@ -793,7 +807,7 @@ function Analytics({st,bp}){
         </Card>
       </div>
       <Card style={{marginBottom:12}}>
-        <CardHeader title="Cumulative Spend by Category (Apr–Jun 2025)"/>
+        <CardHeader title="Cumulative Spend by Category (Apr–Jun 2026)"/>
         <div style={{padding:"16px 20px"}}>
           {catTotals.map((c,i)=>{
             const pctVal=catTotals[0]?.value>0?c.value/catTotals[0].value:0;
@@ -813,7 +827,7 @@ function Analytics({st,bp}){
       </Card>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
         {[
-          {label:"Best Month",val:"Jun 2025",sub:"$6,446 income · 74.9% margin"},
+          {label:"Best Month",val:"Jun 2026",sub:"$6,446 income · 74.9% margin"},
           {label:"Total 3-Month P&L",val:cu(16663.35-7108.81),sub:"Apr+May+Jun combined"},
           {label:"Avg Monthly Income",val:cu((4684+5533.35+6446)/3),sub:"3-month trailing average"},
         ].map(s=>(
@@ -828,7 +842,122 @@ function Analytics({st,bp}){
   );
 }
 
-function Wallets({st,bp,onUpdate}){
+function TransferForm({wallets,rates,bp,onTransfer,showToast}){
+  const[form,setForm]=useState({
+    from:"metamask_btc",to:"coinbase_btc",
+    amount:"",date:new Date().toISOString().slice(0,10),
+  });
+ 
+  const ACCOUNTS=[
+    {key:"metamask_btc",  label:"MetaMask BTC",   currency:"BTC",  fmt:n=>Number(n||0).toFixed(6)+" ₿"},
+    {key:"coinbase_btc",  label:"Coinbase BTC",   currency:"BTC",  fmt:n=>Number(n||0).toFixed(6)+" ₿"},
+    {key:"metamask_usdt", label:"MetaMask USDT",  currency:"USDT", fmt:n=>"$"+Number(n||0).toFixed(2)},
+    {key:"coinbase_usdt", label:"Coinbase USDT",  currency:"USDT", fmt:n=>"$"+Number(n||0).toFixed(2)},
+    {key:"uob_sgd",       label:"UOB (SGD)",      currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
+    {key:"revolut_sgd",   label:"Revolut (SGD)",  currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
+  ];
+ 
+  // Common transfer paths
+  const QUICK=[
+    {from:"metamask_btc", to:"coinbase_btc",  label:"MetaMask → Coinbase BTC"},
+    {from:"coinbase_btc", to:"metamask_btc",  label:"Coinbase → MetaMask BTC"},
+    {from:"coinbase_usdt",to:"uob_sgd",       label:"USDT → UOB"},
+    {from:"uob_sgd",      to:"revolut_sgd",   label:"UOB → Revolut"},
+    {from:"revolut_sgd",  to:"uob_sgd",       label:"Revolut → UOB"},
+  ];
+ 
+  const fromAcc=ACCOUNTS.find(a=>a.key===form.from);
+  const toAcc=ACCOUNTS.find(a=>a.key===form.to);
+  const amt=parseFloat(form.amount)||0;
+  const bal=wallets[form.from]||0;
+  const insufficient=amt>0&&amt>bal;
+ 
+  const inp={background:"#111",border:"1px solid #1C1C1C",color:"#F5F5F0",borderRadius:5,padding:"8px 10px",fontSize:12,fontFamily:"'SF Mono',monospace",outline:"none",width:"100%"};
+  const lbl={fontSize:10,color:"#333",letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:"'SF Mono',monospace"};
+ 
+  async function submit(){
+    if(!amt||amt<=0||form.from===form.to||insufficient) return;
+    const entries=[
+      {
+        type:"expense",category:"Miscellaneous",
+        amount:amt,currency:fromAcc.currency,account:form.from,
+        label:`Transfer → ${toAcc.label}`,date:form.date,
+      },
+      {
+        type:"income",category:"Miscellaneous",
+        amount:amt,currency:toAcc.currency,account:form.to,
+        label:`Transfer ← ${fromAcc.label}`,date:form.date,
+      },
+    ];
+    await onTransfer(entries);
+    setForm(f=>({...f,amount:""}));
+    showToast(`✓ Transferred ${amt} ${fromAcc.currency} · ${fromAcc.label} → ${toAcc.label}`);
+  }
+ 
+  return(
+    <div style={{padding:"14px 18px"}}>
+      {/* Quick transfer buttons */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
+        {QUICK.map(q=>(
+          <button key={q.label} onClick={()=>setForm(f=>({...f,from:q.from,to:q.to}))}
+            style={{background:form.from===q.from&&form.to===q.to?"#1C1C1C":"#111",border:`1px solid ${form.from===q.from&&form.to===q.to?"#2A2A2A":"#1C1C1C"}`,color:form.from===q.from&&form.to===q.to?"#F5F5F0":"#333",borderRadius:5,padding:"5px 10px",fontSize:10,cursor:"pointer",fontFamily:"'SF Mono',monospace",letterSpacing:"0.08em"}}>
+            {q.label}
+          </button>
+        ))}
+      </div>
+ 
+      <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10,alignItems:"end",marginBottom:12}}>
+        <div>
+          <label style={lbl}>From</label>
+          <select value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+            {ACCOUNTS.map(a=>(
+              <option key={a.key} value={a.key}>{a.label} — {a.fmt(wallets[a.key])}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{fontSize:16,color:"#2A2A2A",paddingBottom:8,textAlign:"center",userSelect:"none"}}>→</div>
+        <div>
+          <label style={lbl}>To</label>
+          <select value={form.to} onChange={e=>setForm(f=>({...f,to:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+            {ACCOUNTS.filter(a=>a.key!==form.from).map(a=>(
+              <option key={a.key} value={a.key}>{a.label} — {a.fmt(wallets[a.key])}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+ 
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+        <div>
+          <label style={lbl}>Amount ({fromAcc?.currency})</label>
+          <input type="number" step="any" value={form.amount}
+            onChange={e=>setForm(f=>({...f,amount:e.target.value}))}
+            placeholder={fromAcc?.currency==="BTC"?"0.005000":"100.00"}
+            style={{...inp,borderColor:insufficient?"#F87171":"#1C1C1C"}}/>
+          {insufficient&&<div style={{fontSize:10,color:"#F87171",marginTop:3,fontFamily:"'SF Mono',monospace"}}>Insufficient — balance: {fromAcc?.fmt(bal)}</div>}
+          {amt>0&&!insufficient&&<div style={{fontSize:10,color:"#555",marginTop:3,fontFamily:"'SF Mono',monospace"}}>Available: {fromAcc?.fmt(bal)}</div>}
+          {amt>0&&bp&&fromAcc?.currency==="BTC"&&<div style={{fontSize:10,color:"#FBBF24",marginTop:2,fontFamily:"'SF Mono',monospace"}}>≈ ${(amt*bp).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>}
+        </div>
+        <div>
+          <label style={lbl}>Date</label>
+          <input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={inp}/>
+        </div>
+      </div>
+ 
+      <button onClick={submit} disabled={!amt||amt<=0||form.from===form.to||insufficient}
+        style={{background:"#F5F5F0",color:"#0A0A0A",border:"none",borderRadius:5,padding:"9px 24px",fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",cursor:"pointer",fontFamily:"'SF Mono',monospace"}}>
+        Transfer →
+      </button>
+ 
+      {form.from!==form.to&&amt>0&&!insufficient&&(
+        <div style={{marginTop:10,fontSize:11,color:"#2A2A2A",fontFamily:"'SF Mono',monospace"}}>
+          {fromAcc?.fmt(amt)} from {fromAcc?.label} → {toAcc?.label}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Wallets({st,bp,onUpdate,onTransfer,showToast}){
   const{wallets:w,rates,btcCostBasis}=st;
   const nw=netWorth(w,bp,rates);
   const btcTotal=totalBTC(w);
@@ -906,7 +1035,11 @@ function Wallets({st,bp,onUpdate}){
             <div style={{fontSize:11,color:"#2A2A2A",marginTop:3,fontFamily:"'SF Mono',monospace"}}>{csg(nw*rates.USDSGD)} · {cid(nw*rates.USDIDR)}</div>
           </div>
         </div>
-      </Card>
+      </Card> 
+      <Card style={{marginTop:12}}>
+  <CardHeader title="Transfer Between Accounts"/>
+  <TransferForm wallets={w} rates={rates} bp={bp} onTransfer={onTransfer} showToast={showToast}/>
+</Card>
     </div>
   );
 }
@@ -932,7 +1065,24 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
       const txMatch=reply.match(/<TRANSACTIONS>([\s\S]*?)<\/TRANSACTIONS>/);
       let cleanReply=reply.replace(/<TRANSACTIONS>[\s\S]*?<\/TRANSACTIONS>/g,"").trim();
       if(txMatch){
-        try{const txs=JSON.parse(txMatch[1].trim());setPendingTx(txs);cleanReply+="\n\n*Transactions parsed above — confirm to save.*";}catch{}
+        try{
+          const today=new Date().toISOString().slice(0,10);
+          let txs=JSON.parse(txMatch[1].trim());
+          // Sanitize
+          txs=txs.map(t=>({
+            ...t,
+            type: t.type==="income"?"income":"expense",
+            amount: Math.abs(parseFloat(t.amount)||0),
+            currency: t.currency||"SGD",
+            account: t.account||"revolut_sgd",
+            category: t.category
+              ? EXPENSE_CATS.find(c=>c.toLowerCase()===t.category.toLowerCase()) || t.category
+              : "Miscellaneous",
+            date: (t.date&&/^\d{4}-\d{2}-\d{2}$/.test(t.date))?t.date:new Date().toISOString().slice(0,10),
+          }));
+          setPendingTx(txs);
+          cleanReply+="\n\n*Transactions parsed above — confirm to save.*";
+        }catch{}
       }
       setMsgs(m=>[...m,{role:"assistant",content:cleanReply}]);
       setChatHistory([...newHistory,{role:"assistant",content:cleanReply}]);
@@ -1028,7 +1178,8 @@ export default function App(){
   const[dbLoading,setDbLoading]=useState(true);
   const[toast,setToast]=useState(null);
   const[syncError,setSyncError]=useState(false);
-
+  const[walletRowId,setWalletRowId]=useState(null);
+  
   const showToast=msg=>setToast(msg);
 
   // ── Load from Supabase on mount ──
@@ -1045,9 +1196,10 @@ export default function App(){
         // Load wallets
         const walletData=await sb("wallets?order=updated_at.desc&limit=1");
         if(walletData&&walletData[0]){
-          const wd=walletData[0];
-          setWallets({coinbase_btc:parseFloat(wd.coinbase_btc),metamask_btc:parseFloat(wd.metamask_btc),coinbase_usdt:parseFloat(wd.coinbase_usdt),uob_sgd:parseFloat(wd.uob_sgd),revolut_sgd:parseFloat(wd.revolut_sgd),bca_idr:parseFloat(wd.bca_idr)});
-        }
+         const wd=walletData[0];
+          setWalletRowId(wd.id);  // ← add this
+         setWallets({coinbase_btc:parseFloat(wd.coinbase_btc),metamask_btc:parseFloat(wd.metamask_btc),coinbase_usdt:parseFloat(wd.coinbase_usdt),uob_sgd:parseFloat(wd.uob_sgd),revolut_sgd:parseFloat(wd.revolut_sgd),bca_idr:parseFloat(wd.bca_idr)});
+         }
         // Load settings
         const settingsData=await sb("settings");
         if(settingsData){
@@ -1071,8 +1223,12 @@ export default function App(){
   async function saveWallets(newW){
     setWallets(newW);
     try{
-      await sb("wallets?id=neq.00000000-0000-0000-0000-000000000000","DELETE");
-      await sb("wallets","POST",{...newW,updated_at:new Date().toISOString()});
+      if(walletRowId){
+        await sb(`wallets?id=eq.${walletRowId}`,"PATCH",{...newW,updated_at:new Date().toISOString()});
+      }else{
+        const res=await sb("wallets","POST",{...newW,updated_at:new Date().toISOString()});
+        if(res&&res[0]) setWalletRowId(res[0].id);
+      }
     }catch(e){console.error("Wallet save error:",e);}
   }
 
@@ -1089,16 +1245,17 @@ export default function App(){
     const newEntries=txs.map(t=>({...t,amount:parseFloat(t.amount)}));
     const newW={...wallets};
     newEntries.forEach(e=>{
-      const amt=parseFloat(e.amount);
+      const amt=Math.abs(parseFloat(e.amount));
       if(!e.account||!newW.hasOwnProperty(e.account))return;
       newW[e.account]=e.type==="income"?(newW[e.account]||0)+amt:Math.max(0,(newW[e.account]||0)-amt);
     });
-    // Save to Supabase
-    try{
-      for(const e of newEntries){
-        const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date});
-        if(saved&&saved[0]) setLedger(l=>[{...e,id:saved[0].id},...l]);
-      }
+// Save to Supabase
+try{
+  for(const e of newEntries){
+    const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date});
+    const id=saved?.[0]?.id||crypto.randomUUID();
+    setLedger(l=>[{...e,id},...l]);
+  }
       await saveWallets(newW);
       showToast(`✓ ${newEntries.length} transaction(s) saved to Supabase`);
     }catch(err){
@@ -1120,17 +1277,59 @@ export default function App(){
   async function addOrder(o){
     setOrders(os=>[o,...os]);
     try{
-      await sb("orders","POST",{id:o.id,client:o.client,item:o.item,cost:o.cost,sale_price:o.salePrice,btc_amount:o.btcAmount,date:o.date,status:o.status,delivery_days:o.deliveryDays});
-      showToast("✓ Order saved");
-    }catch(e){console.error("Order save error:",e);}
+      await sb("orders","POST",{id:o.id,client:o.client,item:o.items,items:o.items,vendor:o.vendor,cost:o.costBTC,sale_price:o.saleBTC,btc_amount:o.saleBTC,date:o.date,status:o.status,delivered:o.delivered,delivery_days:null});
+      
+      // Auto-log profit to metamask_btc immediately on order creation
+      const profitBTC = (parseFloat(o.saleBTC)||0) - (parseFloat(o.costBTC)||0);
+      if(profitBTC > 0){
+        const incomeEntry = {
+          type: "income",
+          category: "Dropshipping",
+          amount: profitBTC,
+          currency: "BTC",
+          account: "metamask_btc",
+          label: `ORD-${o.id} — ${o.client} (${o.vendor})`,
+          date: o.date,
+        };
+        await applyTransactions([incomeEntry]);
+        showToast(`✓ Order saved · +${profitBTC.toFixed(6)} ₿ → MetaMask`);
+      }
+    }catch(e){ console.error("Order save error:",e); }
   }
 
   // ── Update order status ──
-  async function updateOrder(id,patch){
-    setOrders(os=>os.map(o=>o.id===id?{...o,...patch}:o));
-    try{await sb(`orders?id=eq.${id}`,"PATCH",{status:patch.status});}catch(e){console.error("Order update error:",e);}
+  async function updateOrder(id, patch) {
+    setOrders(os => os.map(o => o.id === id ? { ...o, ...patch } : o));
+    try {
+      const dbPatch = {};
+      if (patch.status !== undefined) dbPatch.status = patch.status;
+      if (patch.delivered !== undefined) dbPatch.delivered = patch.delivered;
+      await sb(`orders?id=eq.${id}`, "PATCH", dbPatch);
+    }catch(e) { console.error("Order update error:", e); }
   }
 
+  async function deleteOrder(id){
+  const order = orders.find(o => o.id === id);
+  setOrders(os => os.filter(o => o.id !== id));
+
+  // Reverse profit from metamask_btc
+  if(order){
+    const profitBTC = (parseFloat(order.saleBTC||order.salePrice||0)) - (parseFloat(order.costBTC||order.cost||0));
+    if(profitBTC > 0){
+      const newW = { ...wallets, metamask_btc: Math.max(0,(wallets.metamask_btc||0) - profitBTC) };
+      await saveWallets(newW);
+    }
+    // Remove matching ledger entry
+    const matchingEntry = ledger.find(e => e.label && e.label.includes(id));
+    if(matchingEntry){
+      setLedger(l => l.filter(e => e.id !== matchingEntry.id));
+      try{ await sb(`ledger?id=eq.${matchingEntry.id}`,"DELETE"); }catch(e){ console.error(e); }
+    }
+  }
+
+  try{ await sb(`orders?id=eq.${id}`,"DELETE"); }catch(e){ console.error(e); }
+  showToast("✓ Order removed · balance reversed");
+}
   // ── Handle wallet/rate/setting updates ──
   function handleUpdate(key,value){
     if(key==="wallets") saveWallets(value);
@@ -1211,9 +1410,9 @@ export default function App(){
         {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice}/>}
         {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry}/>}
         {view==="Calendar" &&<CalendarView st={st} bp={btcPrice}/>}
-        {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder}/>}
+        {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
-        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate}/>}
+        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast}/>}
         {view==="AI Chat"  &&<AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>}
       </div>
 
