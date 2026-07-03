@@ -102,31 +102,83 @@ async function callClaude(messages,system,tools=[]){
 async function parseTransaction(text,rates,bp){
   const today=new Date().toISOString().slice(0,10);
   const yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);
-  const sys=`You are a financial transaction parser. Parse natural language into structured JSON.
-ACCOUNTS: coinbase_btc, metamask_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd
-EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
-RULES:
-- ALL expenses → revolut_sgd + SGD by default
-- "BCA" or "cash" or "tunai" → revolut_sgd still, but note it in label (we removed BCA)
-- "revolut" → revolut_sgd, SGD
-- "UOB" → uob_sgd, SGD
-- BTC income → coinbase_btc (or metamask_btc if user says metamask)
-- USDT income → coinbase_usdt (or metamask_usdt if user says metamask)
-- USD income → coinbase_usdt, USD
-- Dad/Mom/Sam/Glenn → category = that name
-- CRITICAL: date = YYYY-MM-DD always. Today = ${today}. Yesterday = ${yesterday}. Never write the word "today".
-- CRITICAL: account must never be empty or null.
-- CRITICAL: amount must be a positive number.
-Return ONLY valid JSON array. No markdown. No explanation.
-[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|USD|SGD","account":"coinbase_btc|metamask_btc|coinbase_usdt|metamask_usdt|uob_sgd|revolut_sgd","label":"...","date":"YYYY-MM-DD"}]`;
+  const sys=`You are a financial transaction parser for a crypto entrepreneur based in Singapore/Indonesia.
+ 
+FINANCIAL FLOW:
+- INCOME: always crypto. BTC goes to metamask_btc or coinbase_btc. USDT goes to coinbase_usdt or metamask_usdt.
+- EXPENSES: always fiat. SGD from revolut_sgd. IDR from bca_idr. Never deduct from crypto for expenses.
+- TRANSFERS: moving money between accounts (not income or expense). Parse as two entries: expense from source + income to destination.
+ 
+ACCOUNTS:
+- metamask_btc → BTC wallet
+- coinbase_btc → BTC on Coinbase
+- coinbase_usdt → USDT on Coinbase
+- metamask_usdt → USDT on MetaMask
+- uob_sgd → UOB bank (SGD)
+- revolut_sgd → Revolut (SGD) ← default for SGD expenses
+- bca_idr → BCA bank (IDR) ← for IDR expenses
+ 
+EXPENSE CATEGORIES (use EXACTLY one, no variations):
+Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
+ 
+CATEGORY MAPPING:
+- dad, father, papa → Dad
+- mom, mother, mama, mum → Mom
+- sam → Sam
+- glenn → Glenn
+- gear, steroids, mast, test, tren, testosterone, anavar, winstrol, deca, eq, npp, bloodwork, blood test, labs, needles, syringes, pins, vials, any PED or steroid → Gear
+- gas, fuel, petrol, transport, grab, taxi, uber, gojek → Gas
+- dating, date, girlfriend, flowers, restaurant date → Dating
+- personal, haircut, grooming, supplements, supps, vitamins, protein, creatine, pre workout → Personal
+- family, food, groceries, dinner, lunch, breakfast → Family
+- debt, loan, repayment, installment → Debt Repayment
+- anything else → Miscellaneous
+ 
+CURRENCY RULES:
+- "$", "dollar", "usd" in EXPENSES = SGD (expenses are always fiat, revolut_sgd)
+- "IDR", "ribu", "rb", "ribu", "juta" = IDR → bca_idr
+- "SGD", "S$" = SGD → revolut_sgd
+- BTC income → metamask_btc by default (unless user says coinbase)
+- USDT income → coinbase_usdt by default (unless user says metamask)
+ 
+TRANSFER DETECTION:
+If user says "transfer", "withdraw", "move", "send" between accounts, create TWO entries:
+1. expense from source account
+2. income to destination account
+Both with same amount and date.
+Transfer pairs:
+- metamask → coinbase: metamask_btc → coinbase_btc
+- coinbase → uob: coinbase_usdt or coinbase_btc → uob_sgd (convert to SGD)
+- uob → revolut: uob_sgd → revolut_sgd
+- revolut → bca: revolut_sgd → bca_idr (convert to IDR)
+ 
+CRITICAL:
+- date = YYYY-MM-DD always. Today = ${today}. Yesterday = ${yesterday}. Never write "today".
+- account must never be null. Default expenses to revolut_sgd.
+- amount must be positive.
+- type must be exactly "income" or "expense".
+ 
+Return ONLY valid JSON array, no markdown.
+[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]`;
   const txt=await callClaude([{role:"user",content:text}],sys);
   const clean=txt.replace(/```json[\s\S]*?```|```/g,"").trim();
   const parsed=JSON.parse(clean);
-  // Sanitize: fix any "today"/"yesterday" dates that slipped through
   return parsed.map(e=>({
     ...e,
-    date: (e.date&&/^\d{4}-\d{2}-\d{2}$/.test(e.date)) ? e.date : today,
+    type: e.type==="income"?"income":"expense",
+    amount: Math.abs(parseFloat(e.amount)||0),
+    currency: e.currency||"SGD",
     account: e.account||"revolut_sgd",
+    category: (()=>{
+      if(!e.category) return "Miscellaneous";
+      const raw=e.category.toLowerCase().trim();
+      const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);
+      if(exact) return exact;
+      const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));
+      if(partial) return partial;
+      return "Miscellaneous";
+    })(),
+    date: (e.date&&/^\d{4}-\d{2}-\d{2}$/.test(e.date))?e.date:today,
   }));
 }
 
@@ -138,18 +190,39 @@ async function aiChat(userMsg,state,bp,chatHistory){
   const btcPnL=bp&&state.btcCostBasis?(bp-state.btcCostBasis)*btcTotal:0;
   const recentTx=state.ledger.slice(0,5).map(e=>`${e.date} [${e.type}] ${e.label||e.category} ${e.amount} ${e.currency}`).join("\n")||"none";
   const sys=`You are Jo's personal finance AI — sharp, direct, data-driven.
-LIVE STATE:
-- BTC: ${bp?cu(bp):"unknown"} | Basis: ${cu(state.btcCostBasis)} | PnL: ${cu(btcPnL)}
-- Total BTC: ${cbt(btcTotal)} = ${bp?cu(btcTotal*bp):"?"}
-- Net worth: ${cu(nw)} = ${csg(nw*state.rates.USDSGD)}
-- USDT: ${cu(state.wallets.coinbase_usdt)} | UOB: ${csg(state.wallets.uob_sgd)} | Revolut: ${csg(state.wallets.revolut_sgd)} | BCA: ${cid(state.wallets.bca_idr)}
-- This month: ${cu(md.inc)} income | ${cu(md.cost)} costs | ${cp(md.margin)} margin
-- Recent: ${recentTx}
-- History: Apr $4,684/$2,416 | May $5,533/$3,075 | Jun $6,446/$1,617
-- CRITICAL: date must always be YYYY-MM-DD format, never "today". Today = ${new Date().toISOString().slice(0,10)}. Account must never be empty.
-- ALL expenses go to revolut_sgd (SGD) by default, or bca_idr (IDR) if user mentions BCA/cash
-If user describes a transaction, also output: <TRANSACTIONS>[...]</TRANSACTIONS>
-Be concise, use $ values, give real advice.`;
+ 
+  FINANCIAL FLOW:
+  - INCOME: BTC (→ metamask_btc or coinbase_btc) or USDT (→ coinbase_usdt or metamask_usdt)
+  - EXPENSES: SGD from revolut_sgd, IDR from bca_idr. "$" in expenses = SGD not USD.
+  - TRANSFERS: metamask→coinbase, coinbase→UOB, UOB→Revolut, Revolut→BCA
+   
+  ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
+  EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
+   
+  LIVE STATE:
+  - BTC: ${bp?cu(bp):"unknown"} | Cost basis: ${cu(state.btcCostBasis)} | BTC PnL: ${cu(btcPnL)}
+  - Total BTC: ${cbt(btcTotal)} = ${bp?cu(btcTotal*bp):"?"}
+  - Net worth: ${cu(nw)} = ${csg(nw*state.rates.USDSGD)}
+  - MetaMask BTC: ${cbt(state.wallets.metamask_btc)} | Coinbase BTC: ${cbt(state.wallets.coinbase_btc)}
+  - Coinbase USDT: ${cu(state.wallets.coinbase_usdt)} | MetaMask USDT: ${cu(state.wallets.metamask_usdt)}
+  - UOB: ${csg(state.wallets.uob_sgd)} | Revolut: ${csg(state.wallets.revolut_sgd)} | BCA: Rp ${Math.round(state.wallets.bca_idr||0).toLocaleString()}
+  - This month: ${cu(md.inc)} income | ${cu(md.cost)} costs | ${cp(md.margin)} margin
+  - FX: 1 USD = ${state.rates.USDSGD?.toFixed(4)} SGD (live)
+  - Recent: ${recent}
+   
+  If the user describes income, expenses, or transfers — output at the very end:
+  <TRANSACTIONS>[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"metamask_btc|coinbase_btc|coinbase_usdt|metamask_usdt|uob_sgd|revolut_sgd|bca_idr","label":"...","date":"YYYY-MM-DD"}]</TRANSACTIONS>
+   
+  TRANSACTION RULES:
+  - "$" or "dollar" in expenses = SGD → revolut_sgd
+  - IDR amounts → bca_idr
+  - BTC income → metamask_btc
+  - Transfers = two entries (expense from source + income to destination)
+  - date must be YYYY-MM-DD, never "today". Today = ${new Date().toISOString().slice(0,10)}
+  - account must never be null
+  - category must be exactly one of: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
+   
+  Be concise, data-driven, give real advice.`;
   return await callClaude([...chatHistory.slice(-8),{role:"user",content:userMsg}],sys);
 }
 
@@ -1075,9 +1148,17 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
             amount: Math.abs(parseFloat(t.amount)||0),
             currency: t.currency||"SGD",
             account: t.account||"revolut_sgd",
-            category: t.category
-              ? EXPENSE_CATS.find(c=>c.toLowerCase()===t.category.toLowerCase()) || t.category
-              : "Miscellaneous",
+            category: (()=>{
+              if(!t.category) return "Miscellaneous";
+              const raw=t.category.toLowerCase().trim();
+              // exact match first
+              const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);
+              if(exact) return exact;
+              // partial match — if any category name is contained in what AI returned
+              const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));
+              if(partial) return partial;
+              return "Miscellaneous";
+            })(),
             date: (t.date&&/^\d{4}-\d{2}-\d{2}$/.test(t.date))?t.date:new Date().toISOString().slice(0,10),
           }));
           setPendingTx(txs);
@@ -1269,10 +1350,59 @@ try{
 
   // ── Delete ledger entry ──
   async function deleteEntry(id){
-    setLedger(l=>l.filter(e=>e.id!==id));
-    try{await sb(`ledger?id=eq.${id}`,"DELETE");}catch(e){console.error("Delete error:",e);}
+    // Check if this ledger entry is linked to an order
+    const entry = ledger.find(e => e.id === id);
+    
+    // Remove from ledger state and Supabase
+    setLedger(l => l.filter(e => e.id !== id));
+    try{ await sb(`ledger?id=eq.${id}`,"DELETE"); }catch(e){ console.error(e); }
+  
+    // If it's a dropshipping income entry, find and delete the linked order
+    if(entry && entry.category === "Dropshipping" && entry.type === "income"){
+      const linkedOrder = orders.find(o => entry.label?.includes(o.id));
+      if(linkedOrder){
+        const profitBTC=Math.abs(parseFloat(linkedOrder.saleBTC||linkedOrder.salePrice||0))-Math.abs(parseFloat(linkedOrder.costBTC||linkedOrder.cost||0));
+        if(profitBTC>0){
+          const newW={...wallets,metamask_btc:Math.max(0,(wallets.metamask_btc||0)-profitBTC)};
+          await saveWallets(newW);
+        }
+        setOrders(os=>os.filter(o=>o.id!==linkedOrder.id));
+        try{ await sb(`orders?id=eq.${linkedOrder.id}`,"DELETE"); }catch(e){ console.error(e); }
+        showToast("✓ Ledger entry + linked order removed · balance reversed");
+        return;
+      }
+    }
+  // Reverse balance for expenses
+  if(entry && entry.type==="expense"){
+    const acc=entry.account||"revolut_sgd";
+    let amt=Math.abs(parseFloat(entry.amount)||0);
+    if(acc==="revolut_sgd"||acc==="uob_sgd"){
+      if(entry.currency==="USD"||entry.currency==="USDT") amt=amt*rates.USDSGD;
+      if(entry.currency==="IDR") amt=amt*(rates.USDSGD/(rates.USDIDR||16200));
+      if(entry.currency==="BTC") amt=amt*(btcPrice||0)*rates.USDSGD;
+    }
+    if(acc==="bca_idr"){
+      if(entry.currency==="USD"||entry.currency==="USDT") amt=amt*(rates.USDIDR||16200);
+      if(entry.currency==="SGD") amt=amt*(rates.USDIDR||16200)/rates.USDSGD;
+      if(entry.currency==="BTC") amt=amt*(btcPrice||0)*(rates.USDIDR||16200);
+    }
+    if(acc==="coinbase_btc"||acc==="metamask_btc"){
+      if(entry.currency==="USD"||entry.currency==="USDT") amt=amt/(btcPrice||1);
+      if(entry.currency==="SGD") amt=amt/rates.USDSGD/(btcPrice||1);
+      if(entry.currency==="IDR") amt=amt/(rates.USDIDR||16200)/(btcPrice||1);
+    }
+    if(acc==="coinbase_usdt"||acc==="metamask_usdt"){
+      if(entry.currency==="SGD") amt=amt/rates.USDSGD;
+      if(entry.currency==="IDR") amt=amt/(rates.USDIDR||16200);
+      if(entry.currency==="BTC") amt=amt*(btcPrice||0);
+    }
+    const newW={...wallets,[acc]:(wallets[acc]||0)+amt};
+    await saveWallets(newW);
+    showToast("✓ Entry removed · balance restored");
+    return;
   }
-
+  showToast("✓ Entry removed");
+  }
   // ── Add order ──
   async function addOrder(o){
     setOrders(os=>[o,...os]);
@@ -1309,9 +1439,27 @@ try{
   }
 
   async function deleteOrder(id){
-  const order = orders.find(o => o.id === id);
-  setOrders(os => os.filter(o => o.id !== id));
-
+    const order = orders.find(o => o.id === id);
+    setOrders(os => os.filter(o => o.id !== id));
+  
+    // Reverse profit from metamask_btc
+    if(order){
+      const profitBTC = Math.abs(parseFloat(order.saleBTC||order.salePrice||0)) - Math.abs(parseFloat(order.costBTC||order.cost||0));
+      if(profitBTC > 0){
+        const newW = { ...wallets, metamask_btc: Math.max(0,(wallets.metamask_btc||0) - profitBTC) };
+        await saveWallets(newW);
+      }
+      // Find and delete linked ledger entry
+      const matchingEntry = ledger.find(e => e.label && e.label.includes(id));
+      if(matchingEntry){
+        setLedger(l => l.filter(e => e.id !== matchingEntry.id));
+        try{ await sb(`ledger?id=eq.${matchingEntry.id}`,"DELETE"); }catch(e){ console.error(e); }
+      }
+    }
+  
+    try{ await sb(`orders?id=eq.${id}`,"DELETE"); }catch(e){ console.error(e); }
+    showToast("✓ Order + ledger entry removed · balance reversed");
+  
   // Reverse profit from metamask_btc
   if(order){
     const profitBTC = (parseFloat(order.saleBTC||order.salePrice||0)) - (parseFloat(order.costBTC||order.cost||0));
