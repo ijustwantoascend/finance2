@@ -208,7 +208,7 @@ async function aiChat(userMsg,state,bp,chatHistory){
   - UOB: ${csg(state.wallets.uob_sgd)} | Revolut: ${csg(state.wallets.revolut_sgd)} | BCA: Rp ${Math.round(state.wallets.bca_idr||0).toLocaleString()}
   - This month: ${cu(md.inc)} income | ${cu(md.cost)} costs | ${cp(md.margin)} margin
   - FX: 1 USD = ${state.rates.USDSGD?.toFixed(4)} SGD (live)
-  - Recent: ${recent}
+  - Recent: ${recentTx}
    
   If the user describes income, expenses, or transfers — output at the very end:
   <TRANSACTIONS>[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"metamask_btc|coinbase_btc|coinbase_usdt|metamask_usdt|uob_sgd|revolut_sgd|bca_idr","label":"...","date":"YYYY-MM-DD"}]</TRANSACTIONS>
@@ -1146,7 +1146,7 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
             ...t,
             type: t.type==="income"?"income":"expense",
             amount: Math.abs(parseFloat(t.amount)||0),
-            currency: t.currency||"SGD",
+            currency: (t.type==="expense"&&t.currency==="USD")?"SGD":t.currency||"SGD",
             account: t.account||"revolut_sgd",
             category: (()=>{
               if(!t.category) return "Miscellaneous";
