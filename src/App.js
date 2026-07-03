@@ -49,6 +49,8 @@ const DEFAULT_RATES   = {USDSGD:1.354,USDIDR:16200};
 const cu  = (n,d=2) => "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const csg = n => "S$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const cid = n => "Rp "+Math.round(n||0).toLocaleString("id-ID");
+const toIDR = (amountUSD, rates) => amountUSD * (rates.USDIDR||16200);
+const sgdToIDR = (amountSGD, rates) => (amountSGD / (rates.USDSGD||1.354)) * (rates.USDIDR||16200);
 const cbt = n => Number(n||0).toFixed(6)+" ₿";
 const cp  = n => (Number(n||0)*100).toFixed(1)+"%";
 const pct = (a,b) => b?((a-b)/b*100).toFixed(1):"0.0";
@@ -62,8 +64,9 @@ function toUSD(amount,currency,rates,bp){
 }
 function totalBTC(w){return(w.coinbase_btc||0)+(w.metamask_btc||0);}
 function netWorth(w,bp,rates){
-  return totalBTC(w)*(bp||0)+(w.coinbase_usdt||0)+(w.uob_sgd||0)/(rates.USDSGD||1.354)+(w.revolut_sgd||0)/(rates.USDSGD||1.354)+(w.bca_idr||0)/(rates.USDIDR||16200);
+  return totalBTC(w)*(bp||0)+totalUSDT(w)+(w.uob_sgd||0)/(rates.USDSGD||1.354)+(w.revolut_sgd||0)/(rates.USDSGD||1.354)+(w.bca_idr||0)/(rates.USDIDR||16200);
 }
+function totalUSDT(w){ return (w.coinbase_usdt||0)+(w.metamask_usdt||0); }
 function buildMonth(ym,ledger,bp,rates){
   const hist=HISTORICAL[ym];
   const entries=ledger.filter(e=>e.date?.startsWith(ym));
@@ -324,9 +327,10 @@ function Dashboard({st,bp}){
           {bp&&<div style={{fontSize:13,color:btcPnL>=0?"#4ADE80":"#F87171",fontFamily:"'SF Mono',monospace"}}>{btcPnL>=0?"▲":"▼"} {cu(Math.abs(btcPnL))} BTC PnL ({btcPnLPct.toFixed(1)}%)</div>}
         </div>
         <div style={{display:"flex",gap:16,marginTop:6,flexWrap:"wrap"}}>
-          <span style={{fontSize:11,color:"#2A2A2A",fontFamily:"'SF Mono',monospace"}}>{cbt(btcTotal)} @ {bp?cu(bp):"—"}/BTC</span>
-          {bp&&<span style={{fontSize:11,color:"#2A2A2A",fontFamily:"'SF Mono',monospace"}}>{csg(nw*rates.USDSGD)} SGD</span>}
-        </div>
+          <span style={{fontSize:11,color:"#1C1C1C",fontFamily:"'SF Mono',monospace"}}>{cbt(btcTotal)} @ {bp?cu(bp):"—"}/BTC</span>
+         {bp&&<span style={{fontSize:11,color:"#1C1C1C",fontFamily:"'SF Mono',monospace"}}>{csg(nw*rates.USDSGD)} SGD</span>}
+         {bp&&<span style={{fontSize:11,color:"#FBBF24",fontFamily:"'SF Mono',monospace"}}>{cid(nw*(rates.USDIDR||16200))} IDR</span>}
+      </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",marginTop:20}}>
         <Metric label="Income (mo)" value={cu(md.inc)} color="#4ADE80" trend={parseFloat(pct(md.inc,5533))}/>
@@ -557,7 +561,17 @@ function CalendarView({st,bp}){
                 return(
                   <tr key={cat} style={{borderBottom:"1px solid #0D0D0D"}}>
                     <td style={{padding:"8px 12px",color:"#555"}}>{cat}</td>
-                    {vals.map((v,i)=><td key={i} style={{padding:"8px 6px",textAlign:"right",color:v>0?"#F87171":"#1C1C1C"}}>{v>0?cu(v,0):"—"}</td>)}
+                    {vals.map((v,i)=>(
+                      <td key={i} style={{padding:"8px 6px",textAlign:"right",color:v>0?"#F87171":"#151515"}}>
+                         {v>0
+                          ?<div>
+                            <div>{cu(v,0)}</div>
+                            <div style={{fontSize:9,color:"#FBBF24",fontFamily:"'SF Mono',monospace"}}>{cid(v*(rates.USDIDR||16200))}</div>
+                         </div>
+                     :"—"
+                   }
+                 </td>
+                ))}
                     <td style={{padding:"8px 12px",textAlign:"right",color:"#F87171",fontWeight:700}}>{total>0?cu(total):"—"}</td>
                   </tr>
                 );
