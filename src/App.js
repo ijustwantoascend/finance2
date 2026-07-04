@@ -1132,16 +1132,15 @@ export default function App(){
             <span style={{fontSize:20}}>🦉</span>
             <div style={{display:"flex",alignItems:"baseline",gap:6}}>
               <span style={{fontSize:15,fontWeight:800,letterSpacing:"0.04em",color:T.text,fontFamily:T.sans}}>JJ</span>
-              <span style={{fontSize:9,color:T.textD,letterSpacing:"0.18em",textTransform:"uppercase",fontFamily:T.mono}}>Financial OS</span>
-              <span style={{fontSize:9,color:syncError?"#DC2626":T.textD,fontFamily:T.mono}}>· {syncError?"offline":"live ✓"}</span>
+              <span style={{fontSize:9,color:T.textD,letterSpacing:"0.12em",fontFamily:T.mono,fontStyle:"italic"}}>get rich</span>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:1,overflowX:"auto"}}>
             {NAV_ITEMS.map((n,i)=>(
               <button key={n} onClick={()=>setView(n)}
-                style={{background:view===n?T.text:"transparent",border:"none",color:view===n?"#FFFFFF":T.textM,fontSize:11,letterSpacing:"0.08em",textTransform:"uppercase",padding:"6px 12px",borderRadius:4,fontFamily:T.mono,fontWeight:view===n?500:400,whiteSpace:"nowrap"}}>
-                {n}
-              </button>
+              style={{background:view===n?T.text:"transparent",border:"none",color:view===n?"#FFFFFF":T.textM,fontSize:13,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",borderRadius:6,fontFamily:T.mono,fontWeight:view===n?600:400,whiteSpace:"nowrap"}}>
+              {n}
+            </button>
             ))}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
