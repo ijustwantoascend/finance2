@@ -18,6 +18,11 @@ const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct
 const MONTH_KEYS   = ["01","02","03","04","05","06","07","08","09","10","11","12"];
 const NAV_ITEMS    = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","AI Chat"];
 const NAV_ICONS    = ["◈","≡","▦","⊞","∿","◎","✦"];
+const HISTORICAL = {
+  "2026-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:645.35,Dating:232.24,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
+  "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:145.35,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:0,Family:7.97,"Debt Repayment":0}},
+  "2026-06": { inc:6765.00, cost:1603.71, cats:{Dad:306.76,Mom:129.83,Sam:129.83,Glenn:138.93,Personal:203.95,Dating:229.87,Gas:61.13,Gear:360.12,Miscellaneous:0,Family:44.46,"Debt Repayment":0}},
+};
 const DEFAULT_WALLETS = { coinbase_btc:0,metamask_btc:0,coinbase_usdt:0,metamask_usdt:0,uob_sgd:0,revolut_sgd:0,bca_idr:0 };
 const DEFAULT_RATES   = { USDSGD:1.354, USDIDR:16200 };
 
@@ -33,12 +38,17 @@ function totalBTC(w){ return (w.coinbase_btc||0)+(w.metamask_btc||0); }
 function totalUSDT(w){ return (w.coinbase_usdt||0)+(w.metamask_usdt||0); }
 function netWorth(w,bp,rates){ return totalBTC(w)*(bp||0)+totalUSDT(w)+(w.uob_sgd||0)/(rates.USDSGD||1.354)+(w.revolut_sgd||0)/(rates.USDSGD||1.354)+(w.bca_idr||0)/(rates.USDIDR||16200); }
 function buildMonth(ym,ledger,bp,rates){
+  const hist=HISTORICAL[ym];
   const entries=ledger.filter(e=>e.date?.startsWith(ym));
-  const incE=entries.filter(e=>e.type==="income"); const expE=entries.filter(e=>e.type==="expense");
-  const inc=incE.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
-  const cost=expE.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+  const incE=entries.filter(e=>e.type==="income");
+  const expE=entries.filter(e=>e.type==="expense");
+  const liveInc=incE.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+  const liveExp=expE.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+  const inc=(hist?.inc||0)+liveInc;
+  const cost=(hist?.cost||0)+liveExp;
   const cats={};EXPENSE_CATS.forEach(c=>cats[c]=0);
   expE.forEach(e=>{if(e.category)cats[e.category]=(cats[e.category]||0)+toUSD(e.amount,e.currency,rates,bp);});
+  EXPENSE_CATS.forEach(c=>cats[c]=(cats[c]||0)+(hist?.cats[c]||0));
   return{inc,cost,net:inc-cost,margin:inc>0?(inc-cost)/inc:0,cats,count:entries.length};
 }
 
