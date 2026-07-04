@@ -1152,8 +1152,6 @@ export default function App(){
                 {btcLoading?"…":"₿ fetch"}
               </button>
             }
-            <div style={{width:1,height:16,background:T.border}}/>
-            <div style={{fontSize:11,color:T.textM,fontFamily:T.mono}}>{btcPrice?cu(nw):"—"}</div>
           </div>
         </div>
       </div>
