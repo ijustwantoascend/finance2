@@ -789,6 +789,85 @@ function Analytics({st,bp}){
     </div>
   );
 }
+
+// ── Transfer Form ─────────────────────────────────────────────────────────────
+function TransferForm({wallets,rates,bp,onTransfer,showToast}){
+  const[form,setForm]=useState({from:"metamask_btc",to:"coinbase_btc",amount:"",date:new Date().toISOString().slice(0,10)});
+  const ACCOUNTS=[
+    {key:"metamask_btc",  label:"MetaMask BTC",  currency:"BTC",  fmt:n=>Number(n||0).toFixed(6)+" ₿"},
+    {key:"coinbase_btc",  label:"Coinbase BTC",  currency:"BTC",  fmt:n=>Number(n||0).toFixed(6)+" ₿"},
+    {key:"metamask_usdt", label:"MetaMask USDT", currency:"USDT", fmt:n=>"$"+Number(n||0).toFixed(2)},
+    {key:"coinbase_usdt", label:"Coinbase USDT", currency:"USDT", fmt:n=>"$"+Number(n||0).toFixed(2)},
+    {key:"uob_sgd",       label:"UOB (SGD)",     currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
+    {key:"revolut_sgd",   label:"Revolut (SGD)", currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
+    {key:"bca_idr",       label:"BCA (IDR)",     currency:"IDR",  fmt:n=>"Rp "+Math.round(n||0).toLocaleString("id-ID")},
+  ];
+  const QUICK=[
+    {from:"metamask_btc", to:"coinbase_btc",  label:"MetaMask → Coinbase BTC"},
+    {from:"coinbase_usdt",to:"uob_sgd",       label:"USDT → UOB"},
+    {from:"uob_sgd",      to:"revolut_sgd",   label:"UOB → Revolut"},
+    {from:"revolut_sgd",  to:"bca_idr",       label:"Revolut → BCA"},
+    {from:"coinbase_btc", to:"metamask_btc",  label:"Coinbase → MetaMask BTC"},
+  ];
+  const fromAcc=ACCOUNTS.find(a=>a.key===form.from);
+  const toAcc=ACCOUNTS.find(a=>a.key===form.to);
+  const amt=parseFloat(form.amount)||0;
+  const bal=wallets[form.from]||0;
+  const insufficient=amt>0&&amt>bal;
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
+  const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
+  async function submit(){
+    if(!amt||amt<=0||form.from===form.to||insufficient)return;
+    const entries=[
+      {type:"expense",category:"Miscellaneous",amount:amt,currency:fromAcc.currency,account:form.from,label:`Transfer → ${toAcc.label}`,date:form.date},
+      {type:"income", category:"Miscellaneous",amount:amt,currency:toAcc.currency, account:form.to,  label:`Transfer ← ${fromAcc.label}`,date:form.date},
+    ];
+    await onTransfer(entries);
+    setForm(f=>({...f,amount:""}));
+    showToast(`✓ ${fromAcc.label} → ${toAcc.label}`);
+  }
+  return(
+    <div style={{padding:"14px 20px"}}>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
+        {QUICK.map(q=>(
+          <button key={q.label} onClick={()=>setForm(f=>({...f,from:q.from,to:q.to}))}
+            style={{background:form.from===q.from&&form.to===q.to?T.text:T.white,border:`1px solid ${form.from===q.from&&form.to===q.to?T.text:T.border}`,color:form.from===q.from&&form.to===q.to?"#fff":T.textM,borderRadius:4,padding:"5px 10px",fontSize:10,cursor:"pointer",fontFamily:T.mono,fontWeight:form.from===q.from&&form.to===q.to?500:400}}>
+            {q.label}
+          </button>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10,alignItems:"end",marginBottom:12}}>
+        <div><label style={lbl}>From</label>
+          <select value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+            {ACCOUNTS.map(a=><option key={a.key} value={a.key}>{a.label} — {a.fmt(wallets[a.key])}</option>)}
+          </select>
+        </div>
+        <div style={{fontSize:16,color:T.textD,paddingBottom:8,textAlign:"center"}}>→</div>
+        <div><label style={lbl}>To</label>
+          <select value={form.to} onChange={e=>setForm(f=>({...f,to:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+            {ACCOUNTS.filter(a=>a.key!==form.from).map(a=><option key={a.key} value={a.key}>{a.label} — {a.fmt(wallets[a.key])}</option>)}
+          </select>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+        <div>
+          <label style={lbl}>Amount ({fromAcc?.currency})</label>
+          <input type="number" step="any" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder={fromAcc?.currency==="BTC"?"0.005000":"100.00"} style={{...inp,borderColor:insufficient?"#DC2626":T.borderS}}/>
+          {insufficient&&<div style={{fontSize:10,color:T.red,marginTop:3,fontFamily:T.mono}}>Insufficient — {fromAcc?.fmt(bal)}</div>}
+          {!insufficient&&amt>0&&<div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>Available: {fromAcc?.fmt(bal)}</div>}
+          {amt>0&&bp&&fromAcc?.currency==="BTC"&&<div style={{fontSize:10,color:T.gold,marginTop:2,fontFamily:T.mono}}>≈ {cu(amt*bp)}</div>}
+        </div>
+        <div><label style={lbl}>Date</label><input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={inp}/></div>
+      </div>
+      <button onClick={submit} disabled={!amt||amt<=0||form.from===form.to||insufficient}
+        style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 24px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
+        Transfer →
+      </button>
+      {form.from!==form.to&&amt>0&&!insufficient&&<div style={{marginTop:10,fontSize:11,color:T.textD,fontFamily:T.mono}}>{fromAcc?.fmt(amt)} · {fromAcc?.label} → {toAcc?.label}</div>}
+    </div>
+  );
+}
+
 // ── Wallets ───────────────────────────────────────────────────────────────────
 function Wallets({st,bp,onUpdate,onTransfer,showToast}){
   const{wallets:w,rates,btcCostBasis}=st;
