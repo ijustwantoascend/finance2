@@ -16,8 +16,8 @@ const sb = async (path, method="GET", body=null) => {
 const EXPENSE_CATS = ["Dad","Mom","Sam","Glenn","Personal","Dating","Gas","Gear","Miscellaneous","Family","Debt Repayment"];
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTH_KEYS   = ["01","02","03","04","05","06","07","08","09","10","11","12"];
-const NAV_ITEMS    = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","AI Chat"];
-const NAV_ICONS    = ["◈","≡","▦","⊞","∿","◎","✦"];
+const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","AI Chat"];
+const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","✦"];
 const HISTORICAL = {
   "2026-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:645.35,Dating:232.24,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
   "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:145.35,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:0,Family:7.97,"Debt Repayment":0}},
@@ -639,145 +639,156 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function Analytics({st,bp}){
   const{ledger,rates}=st;
-  const allMonths=Array.from(new Set(ledger.map(e=>e.date?.slice(0,7)).filter(Boolean))).sort().slice(-6);
-  const chartData=allMonths.map(ym=>{const md=buildMonth(ym,ledger,bp,rates);return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],income:Math.round(md.inc),cost:Math.round(md.cost),net:Math.round(md.net),margin:Math.round(md.margin*100)};});
-  const catTotals=EXPENSE_CATS.map(c=>{const val=allMonths.reduce((s,ym)=>s+(buildMonth(ym,ledger,bp,rates).cats[c]||0),0);return{name:c,value:Math.round(val)};}).filter(d=>d.value>0).sort((a,b)=>b.value-a.value);
-  const COLORS=[T.red,"#EA580C",T.gold,T.green,T.blue,T.purple,"#EC4899","#14B8A6"];
-  if(chartData.length===0)return(
-    <div style={{padding:"20px 16px"}}><Card style={{padding:"64px 24px",textAlign:"center"}}>
-      <div style={{fontSize:28,marginBottom:12,color:T.textD}}>∿</div>
-      <div style={{color:T.textD,fontSize:13,fontFamily:T.mono}}>No data yet. Log income and expenses to see analytics.</div>
-    </Card></div>
-  );
+  const today=new Date();
+  const[monthOffset,setMonthOffset]=useState(0);
+
+  const targetDate=new Date(today.getFullYear(),today.getMonth()+monthOffset,1);
+  const year=targetDate.getFullYear();
+  const month=targetDate.getMonth();
+  const monthStr=`${year}-${String(month+1).padStart(2,"0")}`;
+  const monthLabel=`${MONTHS_SHORT[month]} ${year}`;
+
+  // Split month into 4 weeks
+  function getWeeks(){
+    const weeks=[];
+    const daysInMonth=new Date(year,month+1,0).getDate();
+    const ranges=[
+      {label:"Week 1",start:1,end:7},
+      {label:"Week 2",start:8,end:14},
+      {label:"Week 3",start:15,end:21},
+      {label:"Week 4",start:22,end:daysInMonth},
+    ];
+    ranges.forEach(r=>{
+      const startStr=`${year}-${String(month+1).padStart(2,"0")}-${String(r.start).padStart(2,"0")}`;
+      const endStr=`${year}-${String(month+1).padStart(2,"0")}-${String(r.end).padStart(2,"0")}`;
+      const entries=ledger.filter(e=>e.date&&e.date>=startStr&&e.date<=endStr&&e.type==="expense");
+      const cats={};
+      EXPENSE_CATS.forEach(c=>{
+        cats[c]=entries.filter(e=>e.category===c).reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+      });
+      const total=entries.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+      weeks.push({...r,cats,total,entries});
+    });
+    return weeks;
+  }
+
+  const weeks=getWeeks();
+  const monthTotal=weeks.reduce((s,w)=>s+w.total,0);
+  const monthIncome=ledger.filter(e=>e.date?.startsWith(monthStr)&&e.type==="income").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+
+  // Chart data — one bar group per week, each bar is total spend
+  const chartData=weeks.map(w=>({
+    week:w.label,
+    total:Math.round(w.total),
+    ...Object.fromEntries(EXPENSE_CATS.map(c=>[c,Math.round(w.cats[c]||0)])),
+  }));
+
+  const COLORS={"Dad":"#DC2626","Mom":"#EA580C","Sam":"#D97706","Glenn":"#65A30D","Personal":"#0891B2","Dating":"#7C3AED","Gas":"#6B7280","Gear":"#1D4ED8","Miscellaneous":"#9CA3AF","Family":"#16A34A","Debt Repayment":"#111827"};
+
+  // Top categories across the month
+  const topCats=EXPENSE_CATS.map(c=>({
+    name:c,
+    total:weeks.reduce((s,w)=>s+(w.cats[c]||0),0),
+    byWeek:weeks.map(w=>w.cats[c]||0),
+  })).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
+
+  const th={textAlign:"left",padding:"10px 16px",color:T.textM,fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"};
+  const td={padding:"10px 16px",borderBottom:`1px solid #F9FAFB`,fontFamily:T.mono,fontSize:12};
+
   return(
     <div style={{padding:"20px 16px"}}>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
-        <Card>
-          <CardHeader title="Income vs Costs vs Net"/>
-          <div style={{padding:"12px 0 8px"}}>
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={chartData}>
-                <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
-                <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
-                <Tooltip content={<CustomTooltip/>}/>
-                <Bar dataKey="income" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
-                <Bar dataKey="cost"   fill="#DC262618" stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Cost"/>
-                <Bar dataKey="net"    fill="#1D4ED818" stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-        <Card>
-          <CardHeader title="Margin % Trend"/>
-          <div style={{padding:"12px 0 8px"}}>
-            <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={chartData}>
-                <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={T.green} stopOpacity={0.12}/><stop offset="95%" stopColor={T.green} stopOpacity={0}/></linearGradient></defs>
-                <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
-                <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>v+"%"}/>
-                <Tooltip content={<CustomTooltip/>}/>
-                <Area type="monotone" dataKey="margin" stroke={T.green} strokeWidth={2} fill="url(#mg)" name="Margin %" dot={{fill:T.green,strokeWidth:0,r:4}}/>
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
+      {/* Month navigator */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <span style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Monthly Spending · 4 Weeks</span>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <button onClick={()=>setMonthOffset(m=>m-1)} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>‹</button>
+          <span style={{fontSize:12,fontWeight:600,color:T.text,fontFamily:T.sans,padding:"0 8px"}}>{monthLabel}</span>
+          <button onClick={()=>setMonthOffset(m=>Math.min(0,m+1))} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>›</button>
+        </div>
       </div>
-      <Card>
-        <CardHeader title="Spend by Category"/>
-        <div style={{padding:"16px 20px"}}>
-          {catTotals.map((c,i)=>{const pctVal=catTotals[0]?.value>0?c.value/catTotals[0].value:0;return(
-            <div key={c.name} style={{marginBottom:12}}>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:5,fontFamily:T.mono}}>
-                <span style={{color:T.textS}}>{c.name}</span>
-                <span style={{color:COLORS[i%COLORS.length],fontWeight:600}}>{cu(c.value)}</span>
-              </div>
-              <div style={{height:3,background:"#F3F4F6",borderRadius:2}}><div style={{height:3,background:COLORS[i%COLORS.length],borderRadius:2,width:Math.min(100,pctVal*100)+"%"}}/></div>
+
+      {/* Summary metrics */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:0,marginBottom:16,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+        <Metric label="Total Spend" value={cu(monthTotal)} color={T.red} sub={cid(monthTotal*(rates.USDIDR||16200))}/>
+        <Metric label="Total Income" value={cu(monthIncome)} color={T.green}/>
+        <Metric label="Net" value={cu(monthIncome-monthTotal)} color={monthIncome-monthTotal>=0?T.green:T.red}/>
+        <Metric label="Margin" value={monthIncome>0?cp((monthIncome-monthTotal)/monthIncome):"—"} color={T.gold}/>
+      </div>
+
+      {/* Weekly spend chart */}
+      <Card style={{marginBottom:16}}>
+        <CardHeader title="Spend per Week"/>
+        <div style={{padding:"12px 0 8px"}}>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={chartData} barGap={2}>
+              <XAxis dataKey="week" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
+              <Tooltip content={<CustomTooltip/>}/>
+              {topCats.slice(0,6).map((c,i)=>(
+                <Bar key={c.name} dataKey={c.name} stackId="a" fill={COLORS[c.name]||T.textD} name={c.name} radius={i===topCats.slice(0,6).length-1?[3,3,0,0]:[0,0,0,0]}/>
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        {/* Legend */}
+        <div style={{padding:"0 20px 14px",display:"flex",flexWrap:"wrap",gap:10}}>
+          {topCats.slice(0,6).map(c=>(
+            <div key={c.name} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.textS}}>
+              <div style={{width:8,height:8,borderRadius:2,background:COLORS[c.name]||T.textD,flexShrink:0}}/>
+              <span style={{fontFamily:T.mono}}>{c.name}</span>
             </div>
-          );})}
+          ))}
+        </div>
+      </Card>
+
+      {/* Category breakdown table — week by week */}
+      <Card>
+        <CardHeader title="Category Breakdown by Week"/>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:500}}>
+            <thead><tr>
+              <th style={{...th,width:140}}>Category</th>
+              {weeks.map(w=><th key={w.label} style={{...th,textAlign:"right"}}>{w.label}<div style={{fontSize:9,color:T.textD,fontWeight:400}}>({w.label==="Week 1"?"1-7":w.label==="Week 2"?"8-14":w.label==="Week 3"?"15-21":`22-${new Date(year,month+1,0).getDate()}`})</div></th>)}
+              <th style={{...th,textAlign:"right"}}>Total</th>
+            </tr></thead>
+            <tbody>
+              {topCats.map((c,i)=>(
+                <tr key={c.name}>
+                  <td style={{...td,display:"flex",alignItems:"center",gap:6}}>
+                    <div style={{width:8,height:8,borderRadius:2,background:COLORS[c.name]||T.textD,flexShrink:0}}/>
+                    <span style={{color:T.textS}}>{c.name}</span>
+                  </td>
+                  {c.byWeek.map((v,wi)=>(
+                    <td key={wi} style={{...td,textAlign:"right",color:v>0?T.red:T.textD}}>
+                      {v>0?<div><div>{cu(v)}</div><div style={{fontSize:9,color:T.gold}}>{cid(v*(rates.USDIDR||16200))}</div></div>:"—"}
+                    </td>
+                  ))}
+                  <td style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>
+                    <div>{cu(c.total)}</div>
+                    <div style={{fontSize:9,color:T.gold}}>{cid(c.total*(rates.USDIDR||16200))}</div>
+                  </td>
+                </tr>
+              ))}
+              <tr style={{borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
+                <td style={{...td,fontWeight:700,color:T.text}}>Total</td>
+                {weeks.map((w,i)=>(
+                  <td key={i} style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>
+                    <div>{cu(w.total)}</div>
+                    <div style={{fontSize:9,color:T.gold}}>{cid(w.total*(rates.USDIDR||16200))}</div>
+                  </td>
+                ))}
+                <td style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>
+                  <div>{cu(monthTotal)}</div>
+                  <div style={{fontSize:9,color:T.gold}}>{cid(monthTotal*(rates.USDIDR||16200))}</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </Card>
     </div>
   );
 }
-
-// ── Transfer Form ─────────────────────────────────────────────────────────────
-function TransferForm({wallets,rates,bp,onTransfer,showToast}){
-  const[form,setForm]=useState({from:"metamask_btc",to:"coinbase_btc",amount:"",date:new Date().toISOString().slice(0,10)});
-  const ACCOUNTS=[
-    {key:"metamask_btc",  label:"MetaMask BTC",  currency:"BTC",  fmt:n=>Number(n||0).toFixed(6)+" ₿"},
-    {key:"coinbase_btc",  label:"Coinbase BTC",  currency:"BTC",  fmt:n=>Number(n||0).toFixed(6)+" ₿"},
-    {key:"metamask_usdt", label:"MetaMask USDT", currency:"USDT", fmt:n=>"$"+Number(n||0).toFixed(2)},
-    {key:"coinbase_usdt", label:"Coinbase USDT", currency:"USDT", fmt:n=>"$"+Number(n||0).toFixed(2)},
-    {key:"uob_sgd",       label:"UOB (SGD)",     currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
-    {key:"revolut_sgd",   label:"Revolut (SGD)", currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
-    {key:"bca_idr",       label:"BCA (IDR)",     currency:"IDR",  fmt:n=>"Rp "+Math.round(n||0).toLocaleString("id-ID")},
-  ];
-  const QUICK=[
-    {from:"metamask_btc", to:"coinbase_btc",  label:"MetaMask → Coinbase BTC"},
-    {from:"coinbase_usdt",to:"uob_sgd",       label:"USDT → UOB"},
-    {from:"uob_sgd",      to:"revolut_sgd",   label:"UOB → Revolut"},
-    {from:"revolut_sgd",  to:"bca_idr",       label:"Revolut → BCA"},
-    {from:"coinbase_btc", to:"metamask_btc",  label:"Coinbase → MetaMask BTC"},
-  ];
-  const fromAcc=ACCOUNTS.find(a=>a.key===form.from);
-  const toAcc=ACCOUNTS.find(a=>a.key===form.to);
-  const amt=parseFloat(form.amount)||0;
-  const bal=wallets[form.from]||0;
-  const insufficient=amt>0&&amt>bal;
-  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
-  const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
-  async function submit(){
-    if(!amt||amt<=0||form.from===form.to||insufficient)return;
-    const entries=[
-      {type:"expense",category:"Miscellaneous",amount:amt,currency:fromAcc.currency,account:form.from,label:`Transfer → ${toAcc.label}`,date:form.date},
-      {type:"income", category:"Miscellaneous",amount:amt,currency:toAcc.currency, account:form.to,  label:`Transfer ← ${fromAcc.label}`,date:form.date},
-    ];
-    await onTransfer(entries);
-    setForm(f=>({...f,amount:""}));
-    showToast(`✓ ${fromAcc.label} → ${toAcc.label}`);
-  }
-  return(
-    <div style={{padding:"14px 20px"}}>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
-        {QUICK.map(q=>(
-          <button key={q.label} onClick={()=>setForm(f=>({...f,from:q.from,to:q.to}))}
-            style={{background:form.from===q.from&&form.to===q.to?T.text:T.white,border:`1px solid ${form.from===q.from&&form.to===q.to?T.text:T.border}`,color:form.from===q.from&&form.to===q.to?"#fff":T.textM,borderRadius:4,padding:"5px 10px",fontSize:10,cursor:"pointer",fontFamily:T.mono,fontWeight:form.from===q.from&&form.to===q.to?500:400}}>
-            {q.label}
-          </button>
-        ))}
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10,alignItems:"end",marginBottom:12}}>
-        <div><label style={lbl}>From</label>
-          <select value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))} style={{...inp,cursor:"pointer"}}>
-            {ACCOUNTS.map(a=><option key={a.key} value={a.key}>{a.label} — {a.fmt(wallets[a.key])}</option>)}
-          </select>
-        </div>
-        <div style={{fontSize:16,color:T.textD,paddingBottom:8,textAlign:"center"}}>→</div>
-        <div><label style={lbl}>To</label>
-          <select value={form.to} onChange={e=>setForm(f=>({...f,to:e.target.value}))} style={{...inp,cursor:"pointer"}}>
-            {ACCOUNTS.filter(a=>a.key!==form.from).map(a=><option key={a.key} value={a.key}>{a.label} — {a.fmt(wallets[a.key])}</option>)}
-          </select>
-        </div>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-        <div>
-          <label style={lbl}>Amount ({fromAcc?.currency})</label>
-          <input type="number" step="any" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder={fromAcc?.currency==="BTC"?"0.005000":"100.00"} style={{...inp,borderColor:insufficient?"#DC2626":T.borderS}}/>
-          {insufficient&&<div style={{fontSize:10,color:T.red,marginTop:3,fontFamily:T.mono}}>Insufficient — {fromAcc?.fmt(bal)}</div>}
-          {!insufficient&&amt>0&&<div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>Available: {fromAcc?.fmt(bal)}</div>}
-          {amt>0&&bp&&fromAcc?.currency==="BTC"&&<div style={{fontSize:10,color:T.gold,marginTop:2,fontFamily:T.mono}}>≈ {cu(amt*bp)}</div>}
-        </div>
-        <div><label style={lbl}>Date</label><input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={inp}/></div>
-      </div>
-      <button onClick={submit} disabled={!amt||amt<=0||form.from===form.to||insufficient}
-        style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 24px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
-        Transfer →
-      </button>
-      {form.from!==form.to&&amt>0&&!insufficient&&<div style={{marginTop:10,fontSize:11,color:T.textD,fontFamily:T.mono}}>{fromAcc?.fmt(amt)} · {fromAcc?.label} → {toAcc?.label}</div>}
-    </div>
-  );
-}
-
 // ── Wallets ───────────────────────────────────────────────────────────────────
 function Wallets({st,bp,onUpdate,onTransfer,showToast}){
   const{wallets:w,rates,btcCostBasis}=st;
@@ -966,10 +977,308 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
     </div>
   );
 }
+
+// BUDGET FUNCTION
+
+function Budget({st,bp,budgets,onSaveBudgets}){
+  const{ledger,rates}=st;
+  const[editing,setEditing]=useState(false);
+  const[totalIDR,setTotalIDR]=useState(budgets.totalIDR||15000000);
+  const[draftPct,setDraftPct]=useState(budgets.pct||{Dad:15,Mom:5,Sam:5,Glenn:5,Personal:10,Dating:10,Gas:5,Gear:15,Miscellaneous:5,Family:10,"Debt Repayment":15});
+  const[wishlist,setWishlist]=useState([]);
+  const[showWishForm,setShowWishForm]=useState(false);
+  const[wishForm,setWishForm]=useState({name:"",amountIDR:"",targetMonth:new Date().toISOString().slice(0,7),priority:"want",note:""});
+  const[selectedMonth,setSelectedMonth]=useState(new Date().toISOString().slice(0,7));
+
+  const pct=budgets.pct||draftPct;
+  const budgetTotalIDR=budgets.totalIDR||totalIDR;
+  const budgetTotalUSD=budgetTotalIDR/(rates.USDIDR||16200);
+
+  const thisM=selectedMonth;
+  const md=buildMonth(thisM,ledger,bp,rates);
+  const spentTotalUSD=md.cost;
+  const spentTotalIDR=spentTotalUSD*(rates.USDIDR||16200);
+  const remainingIDR=budgetTotalIDR-spentTotalIDR;
+  const overallPct=budgetTotalIDR>0?spentTotalIDR/budgetTotalIDR:0;
+
+  const monthWishlist=wishlist.filter(w=>w.targetMonth===thisM&&!w.purchased);
+  const wishTotalIDR=monthWishlist.reduce((s,w)=>s+(parseFloat(w.amountIDR)||0),0);
+  const wishTotalUSD=wishTotalIDR/(rates.USDIDR||16200);
+  const grandTotalIDR=budgetTotalIDR+wishTotalIDR;
+  const projectedIncome=md.inc;
+  const canAfford=projectedIncome>=(spentTotalUSD+wishTotalUSD);
+
+  const totalPct=Object.values(draftPct).reduce((s,v)=>s+(parseFloat(v)||0),0);
+  const pctOk=Math.abs(totalPct-100)<0.1;
+
+  function saveEdit(){
+    if(!pctOk)return;
+    onSaveBudgets({totalIDR,pct:draftPct});
+    setEditing(false);
+  }
+
+  function addWish(){
+    if(!wishForm.name||!wishForm.amountIDR)return;
+    setWishlist(wl=>[...wl,{id:Date.now(),name:wishForm.name,amountIDR:parseFloat(wishForm.amountIDR),targetMonth:wishForm.targetMonth,priority:wishForm.priority,note:wishForm.note,purchased:false}]);
+    setShowWishForm(false);
+    setWishForm({name:"",amountIDR:"",targetMonth:new Date().toISOString().slice(0,7),priority:"want",note:""});
+  }
+
+  function statusColor(p){return p>=1?T.red:p>=0.8?T.gold:T.green;}
+
+  const inp={background:"#fff",border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
+  const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
+
+  const today=new Date();
+  const nextM=new Date();nextM.setMonth(nextM.getMonth()+1);
+  const nextMStr=`${nextM.getFullYear()}-${String(nextM.getMonth()+1).padStart(2,"0")}`;
+  const allMonths=[nextMStr,...Array.from({length:6},(_,i)=>{
+    const d=new Date(today.getFullYear(),today.getMonth()-i,1);
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  })];
+
+  return(
+    <div style={{padding:"20px 16px"}}>
+
+      {/* Month tabs */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:10}}>Budget · Select Month</div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {allMonths.map(m=>{
+            const d=new Date(m+"-01");
+            const isActive=m===selectedMonth;
+            return(
+              <button key={m} onClick={()=>setSelectedMonth(m)}
+                style={{background:isActive?T.text:T.white,color:isActive?"#fff":T.textM,border:`1px solid ${isActive?T.text:T.border}`,borderRadius:5,padding:"6px 14px",fontSize:11,fontWeight:isActive?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                {MONTHS_SHORT[d.getMonth()]} {d.getFullYear()}{m===nextMStr?" →":""}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Overall budget */}
+      <Card style={{marginBottom:16}}>
+        <div style={{padding:"20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:16}}>
+            <div>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Monthly Budget Cap</div>
+              {editing?(
+                <div>
+                  <input type="number" step="100000" value={totalIDR} onChange={e=>setTotalIDR(parseFloat(e.target.value)||0)}
+                    style={{...inp,width:200,fontSize:16,fontWeight:700,padding:"8px 12px"}}/>
+                  <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:4}}>≈ {cu(totalIDR/(rates.USDIDR||16200))} USD</div>
+                </div>
+              ):(
+                <div>
+                  <div style={{fontSize:32,fontWeight:800,color:T.text,fontFamily:T.sans,letterSpacing:"-0.02em"}}>{cid(budgetTotalIDR)}</div>
+                  <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu(budgetTotalUSD)} USD</div>
+                </div>
+              )}
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Spent So Far</div>
+              <div style={{fontSize:24,fontWeight:700,color:statusColor(overallPct),fontFamily:T.sans}}>{cid(spentTotalIDR)}</div>
+              <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu(spentTotalUSD)} · {(overallPct*100).toFixed(0)}% used</div>
+            </div>
+          </div>
+          <div style={{height:8,background:"#F3F4F6",borderRadius:4,overflow:"hidden",marginBottom:10}}>
+            <div style={{height:8,background:statusColor(overallPct),borderRadius:4,width:Math.min(100,overallPct*100)+"%",transition:"width 0.3s"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:12,color:remainingIDR>=0?T.green:T.red,fontWeight:600,fontFamily:T.mono}}>
+              {remainingIDR>=0?"Remaining: ":"Over by: "}{cid(Math.abs(remainingIDR))}
+            </span>
+            <button onClick={editing?saveEdit:()=>setEditing(true)}
+              disabled={editing&&!pctOk}
+              style={{background:editing?T.text:T.white,color:editing?"#fff":T.textS,border:`1px solid ${editing?T.text:T.borderS}`,borderRadius:4,padding:"5px 14px",fontSize:10,cursor:"pointer",fontFamily:T.mono,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase"}}>
+              {editing?`Save${!pctOk?" ("+totalPct.toFixed(0)+"%/100%)":""}` :"Edit Budget"}
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Category % breakdown */}
+      <Card style={{marginBottom:16}}>
+        <CardHeader title={editing?"Set % Per Category (must total 100%)":"Category Budget Breakdown"}/>
+        <div style={{padding:"8px 0"}}>
+          {EXPENSE_CATS.map(cat=>{
+            const catPct=parseFloat(pct[cat])||0;
+            const catBudgetIDR=budgetTotalIDR*(catPct/100);
+            const catBudgetUSD=catBudgetIDR/(rates.USDIDR||16200);
+            const spentUSD=md.cats[cat]||0;
+            const spentIDR=spentUSD*(rates.USDIDR||16200);
+            const remainIDR=catBudgetIDR-spentIDR;
+            const catSpentPct=catBudgetIDR>0?spentIDR/catBudgetIDR:0;
+            const isOver=catSpentPct>=1;
+            const isClose=catSpentPct>=0.8&&catSpentPct<1;
+            return(
+              <div key={cat} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:catPct>0?6:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:13,color:T.textS,fontWeight:500}}>{cat}</span>
+                    {isOver&&<span style={{background:"#FEE2E2",color:T.red,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>OVER</span>}
+                    {isClose&&<span style={{background:"#FEF3C7",color:T.gold,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>CLOSE</span>}
+                  </div>
+                  {editing?(
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <input type="number" step="1" min="0" max="100" value={draftPct[cat]||0}
+                        onChange={e=>setDraftPct(d=>({...d,[cat]:parseFloat(e.target.value)||0}))}
+                        style={{...inp,width:70,textAlign:"right",padding:"4px 8px"}}/>
+                      <span style={{fontSize:12,color:T.textM,fontFamily:T.mono}}>%</span>
+                    </div>
+                  ):(
+                    <div style={{textAlign:"right"}}>
+                      <span style={{fontSize:12,color:T.textM,fontFamily:T.mono,fontWeight:500}}>{catPct}% · {cid(catBudgetIDR)}</span>
+                    </div>
+                  )}
+                </div>
+                {catPct>0&&!editing&&(
+                  <>
+                    <div style={{height:4,background:"#F3F4F6",borderRadius:2,overflow:"hidden",marginBottom:4}}>
+                      <div style={{height:4,background:statusColor(catSpentPct),borderRadius:2,width:Math.min(100,catSpentPct*100)+"%",transition:"width 0.3s"}}/>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,fontFamily:T.mono,color:T.textD}}>
+                      <span>Spent: {cid(spentIDR)} / {cid(catBudgetIDR)}</span>
+                      <span style={{color:remainIDR>=0?T.green:T.red,fontWeight:600}}>
+                        {remainIDR>=0?`${cid(remainIDR)} left`:`${cid(Math.abs(remainIDR))} over`}
+                      </span>
+                    </div>
+                  </>
+                )}
+                {catPct===0&&!editing&&(
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>
+                    {spentIDR>0?`Spent: ${cid(spentIDR)} — no cap set`:"No cap · no spending"}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {editing&&(
+            <div style={{padding:"12px 20px",background:pctOk?"#F0FDF4":"#FEF2F2",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:12,fontFamily:T.mono,color:pctOk?T.green:T.red,fontWeight:600}}>
+                Total: {totalPct.toFixed(1)}% {pctOk?"✓ — ready to save":`— needs to be 100%`}
+              </span>
+              {!pctOk&&<span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{totalPct<100?`Add ${(100-totalPct).toFixed(1)}% more`:`Remove ${(totalPct-100).toFixed(1)}%`}</span>}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Wishlist */}
+      <Card style={{marginBottom:16}}>
+        <CardHeader title={`Wishlist · ${MONTHS_SHORT[new Date(selectedMonth+"-01").getMonth()]}`}
+          action={<button onClick={()=>setShowWishForm(true)} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"5px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.08em",textTransform:"uppercase"}}>+ Add</button>}
+        />
+        {showWishForm&&(
+          <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div><label style={lbl}>Item / Activity</label><input value={wishForm.name} onChange={e=>setWishForm(f=>({...f,name:e.target.value}))} placeholder="e.g. New shoes, Bali trip" style={inp}/></div>
+              <div>
+                <label style={lbl}>Price (IDR)</label>
+                <input type="number" value={wishForm.amountIDR} onChange={e=>setWishForm(f=>({...f,amountIDR:e.target.value}))} placeholder="e.g. 2500000" style={inp}/>
+                {wishForm.amountIDR&&<div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>≈ {cu(parseFloat(wishForm.amountIDR)/(rates.USDIDR||16200))}</div>}
+              </div>
+              <div>
+                <label style={lbl}>Target Month</label>
+                <select value={wishForm.targetMonth} onChange={e=>setWishForm(f=>({...f,targetMonth:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+                  {allMonths.map(m=>{const d=new Date(m+"-01");return<option key={m} value={m}>{MONTHS_SHORT[d.getMonth()]} {d.getFullYear()}</option>;})}
+                </select>
+              </div>
+              <div>
+                <label style={lbl}>Priority</label>
+                <select value={wishForm.priority} onChange={e=>setWishForm(f=>({...f,priority:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+                  <option value="need">Need</option>
+                  <option value="want">Want</option>
+                  <option value="experience">Experience</option>
+                </select>
+              </div>
+            </div>
+            <div style={{marginBottom:12}}><label style={lbl}>Note</label><input value={wishForm.note} onChange={e=>setWishForm(f=>({...f,note:e.target.value}))} placeholder="Why do you want this?" style={inp}/></div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={addWish} disabled={!wishForm.name||!wishForm.amountIDR} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Add</button>
+              <button onClick={()=>setShowWishForm(false)} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:4,padding:"8px 14px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {monthWishlist.length===0&&!showWishForm&&(
+          <div style={{padding:"24px 20px",color:T.textD,fontSize:13,fontFamily:T.mono}}>No wishlist items for this month.</div>
+        )}
+        {monthWishlist.map(w=>{
+          const PRIORITY_COLOR={need:T.red,want:T.blue,experience:T.purple};
+          return(
+            <div key={w.id} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`,opacity:w.purchased?0.4:1}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+                  <input type="checkbox" checked={w.purchased} onChange={()=>setWishlist(wl=>wl.map(x=>x.id===w.id?{...x,purchased:!x.purchased}:x))} style={{width:15,height:15,marginTop:2,cursor:"pointer",accentColor:T.text}}/>
+                  <div>
+                    <div style={{fontSize:13,color:w.purchased?"#9CA3AF":T.textS,fontWeight:500,textDecoration:w.purchased?"line-through":"none"}}>{w.name}</div>
+                    {w.note&&<div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{w.note}</div>}
+                    <span style={{display:"inline-block",background:PRIORITY_COLOR[w.priority]+"15",color:PRIORITY_COLOR[w.priority],border:`1px solid ${PRIORITY_COLOR[w.priority]}25`,borderRadius:3,padding:"1px 6px",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",fontFamily:T.mono,marginTop:4}}>{w.priority}</span>
+                  </div>
+                </div>
+                <div style={{display:"flex",alignItems:"flex-start",gap:8,flexShrink:0,marginLeft:8}}>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:13,color:T.textS,fontWeight:700,fontFamily:T.mono}}>{cid(w.amountIDR)}</div>
+                    <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{cu(w.amountIDR/(rates.USDIDR||16200))}</div>
+                  </div>
+                  <button onClick={()=>setWishlist(wl=>wl.filter(x=>x.id!==w.id))} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14,paddingTop:2}}>×</button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+
+      {/* Grand total */}
+      <Card>
+        <CardHeader title="Budget + Wishlist Summary"/>
+        <div style={{padding:"20px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:0,marginBottom:20,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden"}}>
+            <div style={{padding:"16px",borderRight:`1px solid ${T.border}`}}>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Budget Cap</div>
+              <div style={{fontSize:18,fontWeight:700,color:T.text,fontFamily:T.sans}}>{cid(budgetTotalIDR)}</div>
+              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{cu(budgetTotalUSD)}</div>
+            </div>
+            <div style={{padding:"16px",borderRight:`1px solid ${T.border}`}}>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Wishlist ({monthWishlist.length})</div>
+              <div style={{fontSize:18,fontWeight:700,color:T.purple,fontFamily:T.sans}}>{cid(wishTotalIDR)}</div>
+              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{cu(wishTotalUSD)}</div>
+            </div>
+            <div style={{padding:"16px"}}>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Grand Total</div>
+              <div style={{fontSize:18,fontWeight:700,color:T.text,fontFamily:T.sans}}>{cid(grandTotalIDR)}</div>
+              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{cu(grandTotalIDR/(rates.USDIDR||16200))}</div>
+            </div>
+          </div>
+          <div style={{background:canAfford?"#F0FDF4":"#FEF2F2",border:`1px solid ${canAfford?"#BBF7D0":"#FECACA"}`,borderRadius:8,padding:"16px 20px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <span style={{fontSize:22}}>{canAfford?"✓":"⚠"}</span>
+              <div>
+                <div style={{fontSize:14,fontWeight:700,color:canAfford?T.green:T.red,fontFamily:T.sans}}>{canAfford?"You can afford everything":"Over projected income"}</div>
+                <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginTop:2}}>Income: {cu(projectedIncome)} · Needed: {cu(spentTotalUSD+wishTotalUSD)}</div>
+              </div>
+            </div>
+            <div style={{height:6,background:canAfford?"#BBF7D0":"#FECACA",borderRadius:3,overflow:"hidden"}}>
+              <div style={{height:6,background:canAfford?T.green:T.red,borderRadius:3,width:Math.min(100,((spentTotalUSD+wishTotalUSD)/Math.max(projectedIncome,spentTotalUSD+wishTotalUSD))*100)+"%"}}/>
+            </div>
+            <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginTop:6,textAlign:"right"}}>
+              {canAfford
+                ?`${cid((projectedIncome-spentTotalUSD-wishTotalUSD)*(rates.USDIDR||16200))} left after everything`
+                :`${cid((spentTotalUSD+wishTotalUSD-projectedIncome)*(rates.USDIDR||16200))} short`
+              }
+            </div>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
 // ── App Root ──────────────────────────────────────────────────────────────────
 export default function App(){
   const[ledger,setLedger]=useState([]);
   const[orders,setOrders]=useState([]);
+  const[budgets,setBudgets]=useState({});
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
   const[rates,setRates]=useState(DEFAULT_RATES);
   const[btcCostBasis,setBtcCostBasis]=useState(0);
@@ -998,6 +1307,7 @@ export default function App(){
         const settingsData=await sb("settings");
         if(settingsData)settingsData.forEach(s=>{if(s.key==="btc_cost_basis")setBtcCostBasis(parseFloat(s.value)||0);});
         setSyncError(false);
+        if(s.key==="budgets"){ try{ setBudgets(JSON.parse(s.value)||{}); }catch{} }
       }catch(e){console.error("Supabase load error:",e);setSyncError(true);}
       setDbLoading(false);
     }
@@ -1015,6 +1325,12 @@ export default function App(){
   async function saveSetting(key,value){
     try{await sb(`settings?key=eq.${key}`,"DELETE");await sb("settings","POST",{key,value:String(value),updated_at:new Date().toISOString()});}
     catch(e){console.error("Setting save error:",e);}
+  }
+
+  async function saveBudgets(newBudgets){
+    setBudgets(newBudgets);
+    try{ await saveSetting("budgets",JSON.stringify(newBudgets)); }
+    catch(e){ console.error("Budget save error:",e); }
   }
 
   async function applyTransactions(txs){
@@ -1163,6 +1479,7 @@ export default function App(){
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast}/>}
+        {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets}/>}
         {view==="AI Chat"  &&<AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>}
       </div>
 
