@@ -75,7 +75,7 @@ async function parseTransaction(text,rates,bp){
 FINANCIAL FLOW:
 - INCOME: always crypto. BTC → metamask_btc or coinbase_btc. USDT → coinbase_usdt or metamask_usdt.
 - EXPENSES: always fiat. SGD from revolut_sgd. IDR from bca_idr. Never deduct from crypto for expenses.
-- TRANSFERS: two entries — expense from source + income to destination.
+-TRANSFERS:  Transfers between accounts = type:"transfer", category:"Transfer". Two entries: label "Transfer → X" and "Transfer ← Y"
 ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
 EXPENSE CATEGORIES (EXACTLY one): Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
 CATEGORY MAPPING:
@@ -130,6 +130,7 @@ LIVE STATE:
 If user describes income/expenses/transfers output at end:
 <TRANSACTIONS>[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]</TRANSACTIONS>
 CRITICAL: date=YYYY-MM-DD never "today". Today=${new Date().toISOString().slice(0,10)}. account never null. "$" in expenses=SGD→revolut_sgd.
+TRANSFER RULES: If user mentions transfer/move/send between accounts, output TWO entries both with type:"transfer" and category:"Transfer". First entry label "Transfer → [destination]", second label "Transfer ← [source]". Never use type expense or income for transfers.
 Be concise, data-driven, give real advice.`;
   return await callClaude([...chatHistory.slice(-8),{role:"user",content:userMsg}],sys);
 }
@@ -392,7 +393,7 @@ function Ledger({st,bp,onDelete}){
                         {e.type==="expense"&&<div style={{fontSize:10,color:T.gold}}>{cid(idr)}</div>}
                       </td>
                       <td style={{padding:"10px 16px",color:T.textD,fontSize:11}}>{e.account||"—"}</td>
-                      <td style={{padding:"10px 16px"}}><Badge color={e.type==="income"?T.green:T.red}>{e.type}</Badge></td>
+                      <td style={{padding:"10px 16px"}}><Badge color={e.type==="income"?T.green:e.type==="transfer"?T.blue:T.red}>{e.type}</Badge></td>
                       <td style={{padding:"10px 16px"}}><button onClick={()=>onDelete(e.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14,lineHeight:1}}>×</button></td>
                     </tr>
                   );
@@ -819,8 +820,8 @@ function TransferForm({wallets,rates,bp,onTransfer,showToast}){
   async function submit(){
     if(!amt||amt<=0||form.from===form.to||insufficient)return;
     const entries=[
-      {type:"expense",category:"Miscellaneous",amount:amt,currency:fromAcc.currency,account:form.from,label:`Transfer → ${toAcc.label}`,date:form.date},
-      {type:"income", category:"Miscellaneous",amount:amt,currency:toAcc.currency, account:form.to,  label:`Transfer ← ${fromAcc.label}`,date:form.date},
+      {type:"transfer",category:"Transfer",amount:amt,currency:fromAcc.currency,account:form.from,label:`Transfer → ${toAcc.label}`,date:form.date},
+      {type:"transfer",category:"Transfer",amount:amt,currency:toAcc.currency, account:form.to,  label:`Transfer ← ${fromAcc.label}`,date:form.date},
     ];
     await onTransfer(entries);
     setForm(f=>({...f,amount:""}));
@@ -980,8 +981,9 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
           const today=new Date().toISOString().slice(0,10);
           let txs=JSON.parse(txMatch[1].trim());
           const steroidTerms=["steroid","mast","tren","testosterone","anavar","winstrol","deca","npp","bloodwork","blood test","labs","needles","pins","vials","ped"];
-          txs=txs.map(t=>({...t,type:t.type==="income"?"income":"expense",amount:Math.abs(parseFloat(t.amount)||0),currency:(t.type==="expense"&&t.currency==="USD")?"SGD":t.currency||"SGD",account:t.account||"revolut_sgd",
-            category:(()=>{if(!t.category)return"Miscellaneous";const raw=t.category.toLowerCase().trim();if(steroidTerms.some(s=>raw.includes(s)))return"Gear";const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);if(exact)return exact;const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));if(partial)return partial;return"Miscellaneous";})(),
+          txs=txs.map(t=>({...t,type:t.type==="income"?"income":t.type==="transfer"?"transfer":"expense",
+          amount:Math.abs(parseFloat(t.amount)||0),currency:(t.type==="expense"&&t.currency==="USD")?"SGD":t.currency||"SGD",account:t.account||"revolut_sgd",
+          category:t.type==="transfer"?"Transfer":(()=>{if(!t.category)return"Miscellaneous";const raw=t.category.toLowerCase().trim();if(steroidTerms.some(s=>raw.includes(s)))return"Gear";const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);if(exact)return exact;const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));if(partial)return partial;return"Miscellaneous";})(),
             date:(t.date&&/^\d{4}-\d{2}-\d{2}$/.test(t.date))?t.date:today}));
           setPendingTx(txs);cleanReply+="\n\n*Transactions parsed — confirm to save.*";
         }catch{}
@@ -1018,7 +1020,7 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
             <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:10,fontFamily:T.mono,fontWeight:500}}>Confirm — saves to ledger & updates balances</div>
             {pendingTx.map((t,i)=>(
               <div key={i} style={{fontSize:12,color:T.textS,padding:"5px 0",borderBottom:`1px solid #F9FAFB`,fontFamily:T.mono,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
-                <span><Badge color={t.type==="income"?T.green:T.red}>{t.type}</Badge> <span style={{marginLeft:6,color:T.textD}}>{t.date}</span> <span style={{marginLeft:6}}>{t.label||t.category}</span></span>
+                <span><Badge color={t.type==="income"?T.green:t.type==="transfer"?T.blue:T.red}>{t.type}</Badge><span style={{marginLeft:6,color:T.textD}}>{t.date}</span> <span style={{marginLeft:6}}>{t.label||t.category}</span></span>
                 <span style={{color:t.type==="income"?T.green:T.red,fontWeight:700}}>{t.amount} {t.currency} → {t.account}</span>
               </div>
             ))}
@@ -1415,7 +1417,10 @@ export default function App(){
   async function applyTransactions(txs){
     const newEntries=txs.map(t=>({...t,amount:Math.abs(parseFloat(t.amount))}));
     const newW={...wallets};
-    newEntries.forEach(e=>{const amt=Math.abs(parseFloat(e.amount));if(!e.account||!newW.hasOwnProperty(e.account))return;if(e.type==="income")newW[e.account]=(newW[e.account]||0)+amt;else newW[e.account]=Math.max(0,(newW[e.account]||0)-amt);});
+    newEntries.forEach(e=>{const amt=Math.abs(parseFloat(e.amount));if(!e.account||!newW.hasOwnProperty(e.account))return;if(e.type==="income") newW[e.account]=(newW[e.account]||0)+amt;
+    else if(e.type==="expense") newW[e.account]=Math.max(0,(newW[e.account]||0)-amt);
+    else if(e.type==="transfer"&&e.label?.startsWith("Transfer →")) newW[e.account]=Math.max(0,(newW[e.account]||0)-amt);
+    else if(e.type==="transfer"&&e.label?.startsWith("Transfer ←")) newW[e.account]=(newW[e.account]||0)+amt;});
     try{
       for(const e of newEntries){const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date});const id=saved?.[0]?.id||crypto.randomUUID();setLedger(l=>[{...e,id},...l]);}
       await saveWallets(newW);showToast(`✓ ${newEntries.length} transaction(s) saved`);
@@ -1445,6 +1450,24 @@ export default function App(){
       if(acc==="coinbase_usdt"||acc==="metamask_usdt"){if(entry.currency==="SGD")amt=amt/rates.USDSGD;if(entry.currency==="IDR")amt=amt/(rates.USDIDR||16200);if(entry.currency==="BTC")amt=amt*(btcPrice||0);}
       const newW={...wallets,[acc]:(wallets[acc]||0)+amt};await saveWallets(newW);showToast("✓ Entry removed · balance restored");return;
     }
+
+  // Reverse transfer
+    if(entry&&entry.type==="transfer"){ 
+      const amt=Math.abs(parseFloat(entry.amount)||0);
+      const acc=entry.account||"revolut_sgd";
+      let convertedAmt=amt;
+      const newW={...wallets};
+      if(entry.label?.startsWith("Transfer →")){
+  // This was the outgoing leg — restore it
+       newW[acc]=(newW[acc]||0)+convertedAmt;
+     } else if(entry.label?.startsWith("Transfer ←")){
+  // This was the incoming leg — remove it
+      newW[acc]=Math.max(0,(newW[acc]||0)-convertedAmt);
+   }
+    await saveWallets(newW);
+  showToast("✓ Transfer entry removed · balance restored");
+  return;
+}
     showToast("✓ Entry removed");
   }
 
