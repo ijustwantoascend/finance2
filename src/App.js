@@ -549,10 +549,22 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
       {showForm&&(
         <Card style={{marginBottom:16,padding:"20px"}}>
           <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",marginBottom:16,fontFamily:T.mono,fontWeight:500}}>New Order</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-            <div><label style={lbl}>Vendor</label><select value={form.vendor} onChange={e=>setForm(f=>({...f,vendor:e.target.value}))} style={{...inp,cursor:"pointer"}}>{vendors.map(v=><option key={v}>{v}</option>)}</select></div>
-            <div><label style={lbl}>Customer</label><input value={form.client} onChange={e=>setForm(f=>({...f,client:e.target.value}))} placeholder="e.g. Brooks" style={inp}/></div>
-          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+          <div><label style={lbl}>Vendor</label>
+               <select value={form.vendor} onChange={e=>setForm(f=>({...f,vendor:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+              {vendors.map(v=><option key={v}>{v}</option>)}
+            </select>
+           </div>
+           <div><label style={lbl}>Customer</label>
+              <input value={form.client} onChange={e=>setForm(f=>({...f,client:e.target.value}))} placeholder="e.g. Brooks" style={inp}/>
+           </div>
+             <div><label style={lbl}>Platform</label>
+             <select value={form.platform||""} onChange={e=>setForm(f=>({...f,platform:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+             <option value="">—</option>
+              {["Discord","Telegram","WhatsApp","Instagram","Email"].map(p=><option key={p}>{p}</option>)}
+           </select>
+         </div>
+        </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
             <div>
               <label style={lbl}>Sale (BTC)</label>
