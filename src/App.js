@@ -1369,6 +1369,9 @@ function Budget({st,bp,budgets,onSaveBudgets}){
 }
 // ── App Root ──────────────────────────────────────────────────────────────────
 export default function App(){
+  const[unlocked,setUnlocked]=useState(()=>sessionStorage.getItem("hxn_auth")==="true");
+  const[pwInput,setPwInput]=useState("");
+  const[pwError,setPwError]=useState(false);
   const[ledger,setLedger]=useState([]);
   const[orders,setOrders]=useState([]);
   const[budgets,setBudgets]=useState({});
@@ -1384,6 +1387,34 @@ export default function App(){
   const[walletRowId,setWalletRowId]=useState(null);
   const showToast=msg=>setToast(msg);
 
+  function tryUnlock(){
+    if(pwInput==="ijustwantoascend33"){
+      sessionStorage.setItem("hxn_auth","true");
+      setUnlocked(true);
+    } else {
+      setPwError(true);
+      setTimeout(()=>setPwError(false),2000);
+    }
+  }
+  
+  if(!unlocked) return(
+    <div style={{background:T.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:12,padding:"40px",width:320,boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
+        <div style={{fontSize:20,marginBottom:4}}>🦉</div>
+        <div style={{fontSize:16,fontWeight:800,color:T.text,fontFamily:T.sans,marginBottom:4}}>JJ Financial OS</div>
+        <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginBottom:24,fontStyle:"italic"}}>get rich scheme</div>
+        <input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
+          placeholder="Enter password"
+          style={{width:"100%",background:"#F9FAFB",border:`1px solid ${pwError?"#DC2626":T.borderS}`,borderRadius:6,padding:"10px 14px",fontSize:14,fontFamily:T.mono,outline:"none",marginBottom:12,color:T.text}}/>
+        {pwError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:8}}>Wrong password</div>}
+        <button onClick={tryUnlock} style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
+          Unlock
+        </button>
+      </div>
+    </div>
+  );
+
   useEffect(()=>{
     async function loadAll(){
       setDbLoading(true);
@@ -1398,9 +1429,11 @@ export default function App(){
         const walletData=await sb("wallets?order=updated_at.desc&limit=1");
         if(walletData&&walletData[0]){const wd=walletData[0];setWalletRowId(wd.id);setWallets({coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0});}
         const settingsData=await sb("settings");
-        if(settingsData)settingsData.forEach(s=>{if(s.key==="btc_cost_basis")setBtcCostBasis(parseFloat(s.value)||0);});
+        if(settingsData)settingsData.forEach(s=>{
+          if(s.key==="btc_cost_basis") setBtcCostBasis(parseFloat(s.value)||0);
+          if(s.key==="budgets"){ try{ setBudgets(JSON.parse(s.value)||{}); }catch{} }
+        });
         setSyncError(false);
-        if(s.key==="budgets"){ try{ setBudgets(JSON.parse(s.value)||{}); }catch{} }
       }catch(e){console.error("Supabase load error:",e);setSyncError(true);}
       setDbLoading(false);
     }
