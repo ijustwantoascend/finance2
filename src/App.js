@@ -601,7 +601,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
         <div style={{overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
             <thead><tr>
-              {["Date","Vendor","Customer","Items","Sale ₿","Cost ₿","Profit ₿","Profit $","Margin","Delivered",""].map(h=>(
+            {["Date","Vendor","Customer","Platform","Items","Sale ₿","Cost ₿","Profit ₿","Profit $","Margin","Delivered",""].map(h=>(
                 <th key={h} style={{...thS,textAlign:["Sale ₿","Cost ₿","Profit ₿","Profit $","Margin"].includes(h)?"right":"left"}}>{h}</th>
               ))}
             </tr></thead>
@@ -612,6 +612,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
                   <td style={{...tdS,color:T.textD}}>{o.date}</td>
                   <td style={{...tdS,color:T.textM}}>{o.vendor||"—"}</td>
                   <td style={{...tdS,color:T.textS,fontWeight:600}}>{o.client}</td>
+                  <td style={{...tdS,color:T.textM}}>{o.platform||"—"}</td>
                   <td style={{...tdS,color:T.textM,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.items||""}>{o.items||"—"}</td>
                   <td style={{...tdS,textAlign:"right",color:T.green,fontWeight:600}}>{cbt6(s.saleBTC)}</td>
                   <td style={{...tdS,textAlign:"right",color:T.red}}>{cbt6(s.costBTC)}</td>
