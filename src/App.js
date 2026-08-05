@@ -344,69 +344,167 @@ function Dashboard({st,bp}){
 }
 
 // ── Ledger ────────────────────────────────────────────────────────────────────
+const CAT_COLORS = {
+  "Dad":"#DC2626","Mom":"#EA580C","Sam":"#D97706","Glenn":"#65A30D",
+  "Personal":"#0891B2","Dating":"#7C3AED","Gas":"#6B7280","Gear":"#1D4ED8",
+  "Miscellaneous":"#9CA3AF","Family":"#16A34A","Debt Repayment":"#111827",
+  "Transfer":"#2563EB","Dropshipping":"#16A34A",
+};
+function catColor(cat){ return CAT_COLORS[cat]||T.textM; }
+ 
 function Ledger({st,bp,onDelete}){
   const[typeF,setTypeF]=useState("all");
   const[catF,setCatF]=useState("all");
   const[monthF,setMonthF]=useState("all");
+  const[search,setSearch]=useState("");
+  const[expandedCat,setExpandedCat]=useState(null);
   const{ledger,rates}=st;
+ 
   const months=Array.from(new Set(ledger.map(e=>e.date?.slice(0,7)).filter(Boolean))).sort().reverse();
-  const filtered=ledger.filter(e=>{const tOk=typeF==="all"||e.type===typeF;const cOk=catF==="all"||e.category===catF;const mOk=monthF==="all"||e.date?.startsWith(monthF);return tOk&&cOk&&mOk;});
-  const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"6px 10px",fontSize:11,fontFamily:T.mono,outline:"none",cursor:"pointer"};
-  const th={textAlign:"left",padding:"10px 16px",color:T.textM,fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"};
+ 
+  const filtered=ledger.filter(e=>{
+    const tOk=typeF==="all"||e.type===typeF;
+    const cOk=catF==="all"||e.category===catF;
+    const mOk=monthF==="all"||e.date?.startsWith(monthF);
+    const sOk=!search.trim()||
+      (e.label||"").toLowerCase().includes(search.toLowerCase())||
+      (e.category||"").toLowerCase().includes(search.toLowerCase())||
+      (e.account||"").toLowerCase().includes(search.toLowerCase());
+    return tOk&&cOk&&mOk&&sOk;
+  });
+ 
+  // Summary stats for filtered set
+  const incTotal=filtered.filter(e=>e.type==="income").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+  const expTotal=filtered.filter(e=>e.type==="expense").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+  const trfCount=filtered.filter(e=>e.type==="transfer").length;
+ 
+  // Category summary (expenses only) for the current filter set
+  const catSummary=EXPENSE_CATS.map(c=>({
+    name:c,
+    value:filtered.filter(e=>e.category===c&&e.type==="expense").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0),
+    count:filtered.filter(e=>e.category===c&&e.type==="expense").length,
+  })).filter(c=>c.value>0).sort((a,b)=>b.value-a.value);
+ 
+  const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
+ 
   return(
     <div style={{padding:"20px 16px"}}>
-      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+ 
+      {/* Summary bar */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:0,marginBottom:16,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+        <Metric label="Income" value={cu(incTotal)} color={T.green} sub={`${filtered.filter(e=>e.type==="income").length} entries`}/>
+        <Metric label="Expenses" value={cu(expTotal)} color={T.red} sub={cid(expTotal*(rates.USDIDR||16200))}/>
+        <Metric label="Net" value={cu(incTotal-expTotal)} color={incTotal-expTotal>=0?T.green:T.red}/>
+        <Metric label="Transfers" value={trfCount} color={T.blue}/>
+      </div>
+ 
+      {/* Category quick-filter chips */}
+      {catSummary.length>0&&(
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:8}}>Spend by Category</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {catSummary.map(c=>{
+              const active=catF===c.name;
+              return(
+                <button key={c.name} onClick={()=>setCatF(active?"all":c.name)}
+                  style={{display:"flex",alignItems:"center",gap:7,background:active?catColor(c.name):T.white,border:`1px solid ${active?catColor(c.name):T.border}`,borderRadius:20,padding:"6px 12px 6px 8px",cursor:"pointer",transition:"all 0.15s"}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:active?"#fff":catColor(c.name),flexShrink:0}}/>
+                  <span style={{fontSize:11,color:active?"#fff":T.textS,fontFamily:T.mono,fontWeight:500}}>{c.name}</span>
+                  <span style={{fontSize:11,color:active?"#fff":T.textD,fontFamily:T.mono}}>{cu(c.value,0)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+ 
+      {/* Filters */}
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search description, category, account..."
+          style={{...sel,flex:1,minWidth:200,cursor:"text"}}/>
         <select value={typeF} onChange={e=>setTypeF(e.target.value)} style={sel}>
-          <option value="all">All types</option><option value="income">Income</option><option value="expense">Expense</option>
+          <option value="all">All types</option>
+          <option value="income">Income</option>
+          <option value="expense">Expense</option>
+          <option value="transfer">Transfer</option>
         </select>
         <select value={catF} onChange={e=>setCatF(e.target.value)} style={sel}>
-          <option value="all">All categories</option>{EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}
+          <option value="all">All categories</option>
+          {EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}
         </select>
         <select value={monthF} onChange={e=>setMonthF(e.target.value)} style={sel}>
           <option value="all">All months</option>
           {months.map(m=><option key={m} value={m}>{MONTHS_SHORT[parseInt(m.split("-")[1])-1]} {m.split("-")[0]}</option>)}
         </select>
-        <span style={{fontSize:11,color:T.textD,fontFamily:T.mono,alignSelf:"center"}}>{filtered.length} entries</span>
+        {(typeF!=="all"||catF!=="all"||monthF!=="all"||search)&&(
+          <button onClick={()=>{setTypeF("all");setCatF("all");setMonthF("all");setSearch("");}}
+            style={{background:"none",border:"none",color:T.textD,fontSize:11,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline"}}>
+            Clear filters
+          </button>
+        )}
+        <span style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginLeft:"auto"}}>{filtered.length} entries</span>
       </div>
+ 
+      {/* Entries list */}
       {filtered.length===0?(
         <Card style={{padding:"48px 24px",textAlign:"center"}}>
           <div style={{fontSize:28,marginBottom:10,color:T.textD}}>≡</div>
-          <div style={{color:T.textD,fontSize:13,fontFamily:T.mono}}>No entries yet. Use AI Chat to log transactions.</div>
+          <div style={{color:T.textD,fontSize:13,fontFamily:T.mono}}>No entries match your filters.</div>
         </Card>
       ):(
         <Card>
-          <div style={{overflowX:"auto"}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:600}}>
-              <thead><tr>{["Date","Description","Category","Amount","≈ USD / IDR","Account","Type",""].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
-              <tbody>
-                {filtered.map(e=>{
-                  const usd=toUSD(e.amount,e.currency,rates,bp);
-                  const idr=usd*(rates.USDIDR||16200);
-                  return(
-                    <tr key={e.id} style={{borderBottom:`1px solid #F9FAFB`}}>
-                      <td style={{padding:"10px 16px",color:T.textD}}>{e.date}</td>
-                      <td style={{padding:"10px 16px",color:T.textS,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.label||"—"}</td>
-                      <td style={{padding:"10px 16px",color:T.textM}}>{e.category||"—"}</td>
-                      <td style={{padding:"10px 16px",color:e.type==="income"?T.green:T.red,fontWeight:700}}>{e.type==="income"?"+":"-"}{e.amount} {e.currency}</td>
-                      <td style={{padding:"10px 16px",color:T.textM}}>
-                        <div>{cu(usd)}</div>
-                        {e.type==="expense"&&<div style={{fontSize:10,color:T.gold}}>{cid(idr)}</div>}
-                      </td>
-                      <td style={{padding:"10px 16px",color:T.textD,fontSize:11}}>{e.account||"—"}</td>
-                      <td style={{padding:"10px 16px"}}><Badge color={e.type==="income"?T.green:e.type==="transfer"?T.blue:T.red}>{e.type}</Badge></td>
-                      <td style={{padding:"10px 16px"}}><button onClick={()=>onDelete(e.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14,lineHeight:1}}>×</button></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          {filtered.map((e,i)=>{
+            const usd=toUSD(e.amount,e.currency,rates,bp);
+            const idr=usd*(rates.USDIDR||16200);
+            const color=e.type==="income"?T.green:e.type==="transfer"?T.blue:T.red;
+            const catDot=e.category?catColor(e.category):T.textD;
+            return(
+              <div key={e.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",transition:"background 0.1s"}}>
+                {/* Type icon */}
+                <div style={{width:34,height:34,borderRadius:8,background:color+"12",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:14,color}}>
+                  {e.type==="income"?"↓":e.type==="transfer"?"⇄":"↑"}
+                </div>
+ 
+                {/* Description + meta */}
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,color:T.textS,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                    {e.label||e.category||"—"}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2,flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{e.date}</span>
+                    {e.category&&(
+                      <span style={{display:"flex",alignItems:"center",gap:3}}>
+                        <span style={{fontSize:10,color:T.textD}}>·</span>
+                        <div style={{width:5,height:5,borderRadius:"50%",background:catDot}}/>
+                        <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{e.category}</span>
+                      </span>
+                    )}
+                    {e.account&&(
+                      <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>· {e.account}</span>
+                    )}
+                  </div>
+                </div>
+ 
+                {/* Amount */}
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{fontSize:13,fontWeight:700,color,fontFamily:T.mono}}>
+                    {e.type==="income"?"+":e.type==="transfer"?"":"-"}{e.amount} {e.currency}
+                  </div>
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:1}}>
+                    {cu(usd)}{e.type==="expense"&&` · ${cid(idr)}`}
+                  </div>
+                </div>
+ 
+                {/* Delete */}
+                <button onClick={()=>onDelete(e.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16,flexShrink:0,padding:"0 2px",lineHeight:1}}>×</button>
+              </div>
+            );
+          })}
         </Card>
       )}
     </div>
   );
 }
-
 // ── Calendar ──────────────────────────────────────────────────────────────────
 function CalendarView({st,bp}){
   const[year,setYear]=useState(2026);
@@ -495,27 +593,106 @@ function CalendarView({st,bp}){
 }
 
 // ── Orders ────────────────────────────────────────────────────────────────────
+const PLATFORM_OPTIONS = ["Discord","Telegram","WhatsApp","Instagram","Email","Signal"];
+const PRESET_ITEMS = ["Rt20","Rt15","Cd5","Glow70","Tsm10","Ba10","Bb10"];
+ 
 function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
   const{orders}=st;
   const[showForm,setShowForm]=useState(false);
   const[vendors,setVendors]=useState(["Violet","Fiona","Zhongshui"]);
   const[newVendor,setNewVendor]=useState("");
   const[showVendorInput,setShowVendorInput]=useState(false);
-  const[form,setForm]=useState({vendor:"Violet",client:"",saleBTC:"",costBTC:"",items:"",date:new Date().toISOString().slice(0,10)});
-  function orderStats(o){const costBTC=parseFloat(o.costBTC||o.cost||0);const saleBTC=parseFloat(o.saleBTC||o.salePrice||0);const profitBTC=saleBTC-costBTC;return{costBTC,saleBTC,profitBTC,profitUSD:profitBTC*(bp||0),margin:saleBTC>0?profitBTC/saleBTC:0};}
-  const totals=orders.reduce((acc,o)=>{const s=orderStats(o);return{costBTC:acc.costBTC+s.costBTC,saleBTC:acc.saleBTC+s.saleBTC,profitBTC:acc.profitBTC+s.profitBTC,profitUSD:acc.profitUSD+s.profitUSD};},{costBTC:0,saleBTC:0,profitBTC:0,profitUSD:0});
+  const[period,setPeriod]=useState("all"); // all | week | month | 90d
+  const[statusF,setStatusF]=useState("all"); // all | pending | delivered
+  const[search,setSearch]=useState("");
+  const[sortBy,setSortBy]=useState("date"); // date | profit | client
+ 
+  const emptyForm={vendor:vendors[0]||"Violet",client:"",platform:"",items:"",costBTC:"",saleBTC:"",date:new Date().toISOString().slice(0,10)};
+  const[form,setForm]=useState(emptyForm);
+ 
+  function orderStats(o){
+    const costBTC=parseFloat(o.costBTC||o.cost||0);
+    const saleBTC=parseFloat(o.saleBTC||o.salePrice||0);
+    const profitBTC=saleBTC-costBTC;
+    return{costBTC,saleBTC,profitBTC,profitUSD:profitBTC*(bp||0),margin:saleBTC>0?profitBTC/saleBTC:0};
+  }
+ 
+  // ── Period filter ──
+  function inPeriod(dateStr){
+    if(period==="all"||!dateStr)return true;
+    const d=new Date(dateStr);
+    const now=new Date();
+    const diffDays=(now-d)/(1000*60*60*24);
+    if(period==="week")return diffDays<=7;
+    if(period==="month")return diffDays<=30;
+    if(period==="90d")return diffDays<=90;
+    return true;
+  }
+ 
+  const filtered=orders.filter(o=>{
+    const pOk=inPeriod(o.date);
+    const sOk=statusF==="all"||(statusF==="pending"&&!o.delivered)||(statusF==="delivered"&&o.delivered);
+    const qOk=!search.trim()||
+      (o.client||"").toLowerCase().includes(search.toLowerCase())||
+      (o.vendor||"").toLowerCase().includes(search.toLowerCase())||
+      (o.items||"").toLowerCase().includes(search.toLowerCase())||
+      (o.platform||"").toLowerCase().includes(search.toLowerCase());
+    return pOk&&sOk&&qOk;
+  }).sort((a,b)=>{
+    if(sortBy==="profit"){
+      const sa=orderStats(a).profitBTC, sb=orderStats(b).profitBTC;
+      return sb-sa;
+    }
+    if(sortBy==="client")return (a.client||"").localeCompare(b.client||"");
+    return (b.date||"").localeCompare(a.date||"");
+  });
+ 
+  const totals=filtered.reduce((acc,o)=>{const s=orderStats(o);return{costBTC:acc.costBTC+s.costBTC,saleBTC:acc.saleBTC+s.saleBTC,profitBTC:acc.profitBTC+s.profitBTC,profitUSD:acc.profitUSD+s.profitUSD};},{costBTC:0,saleBTC:0,profitBTC:0,profitUSD:0});
   const avgMargin=totals.saleBTC>0?totals.profitBTC/totals.saleBTC:0;
-  const pending=orders.filter(o=>!o.delivered).length;
-  const done=orders.filter(o=>o.delivered).length;
-  function submitOrder(){if(!form.client||!form.saleBTC)return;const o={id:"ORD-"+Date.now(),vendor:form.vendor,client:form.client,saleBTC:parseFloat(form.saleBTC)||0,costBTC:parseFloat(form.costBTC)||0,cost:parseFloat(form.costBTC)||0,salePrice:parseFloat(form.saleBTC)||0,btcAmount:parseFloat(form.saleBTC)||0,items:form.items,date:form.date,delivered:false,status:"pending",deliveryDays:null};onAddOrder(o);setShowForm(false);setForm({vendor:vendors[0]||"Violet",client:"",saleBTC:"",costBTC:"",items:"",date:new Date().toISOString().slice(0,10)});}
-  const cbt6=n=>Number(n||0).toFixed(6)+" ₿";const cbt4=n=>Number(n||0).toFixed(4)+" ₿";
+  const pending=filtered.filter(o=>!o.delivered).length;
+  const done=filtered.filter(o=>o.delivered).length;
+ 
+  // Vendor breakdown for filtered set
+  const vendorBreakdown={};
+  filtered.forEach(o=>{
+    const v=o.vendor||"Unknown";
+    if(!vendorBreakdown[v])vendorBreakdown[v]={count:0,profit:0};
+    vendorBreakdown[v].count++;
+    vendorBreakdown[v].profit+=orderStats(o).profitBTC;
+  });
+  const topVendors=Object.entries(vendorBreakdown).sort((a,b)=>b[1].profit-a[1].profit).slice(0,4);
+ 
+  function addVendor(){if(!newVendor.trim())return;setVendors(v=>[...v,newVendor.trim()]);setNewVendor("");setShowVendorInput(false);}
+  function removeVendor(v){setVendors(vs=>vs.filter(x=>x!==v));}
+  function togglePresetItem(code){
+    setForm(f=>{
+      const parts=f.items.split(",").map(s=>s.trim()).filter(Boolean);
+      const idx=parts.findIndex(p=>p===code);
+      if(idx>=0){parts.splice(idx,1);}else{parts.push(code);}
+      return{...f,items:parts.join(", ")};
+    });
+  }
+  function submitOrder(){
+    if(!form.client.trim()||!form.saleBTC)return;
+    const newOrder={id:"ORD-"+Date.now(),vendor:form.vendor,client:form.client.trim(),platform:form.platform,items:form.items,saleBTC:parseFloat(form.saleBTC)||0,costBTC:parseFloat(form.costBTC)||0,cost:parseFloat(form.costBTC)||0,salePrice:parseFloat(form.saleBTC)||0,btcAmount:parseFloat(form.saleBTC)||0,date:form.date,delivered:false,status:"pending",deliveryDays:null};
+    onAddOrder(newOrder);
+    setShowForm(false);
+    setForm({...emptyForm,vendor:vendors[0]||"Violet"});
+  }
+ 
+  const cbt6=n=>Number(n||0).toFixed(6)+" ₿";
+  const cbt4=n=>Number(n||0).toFixed(4)+" ₿";
   const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
   const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
-  const tdS={padding:"11px 14px",borderBottom:`1px solid #F9FAFB`,verticalAlign:"middle",fontFamily:T.mono,fontSize:12};
-  const thS={textAlign:"left",padding:"10px 14px",color:T.textM,fontSize:10,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"};
+  const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
   const profitPreview=(parseFloat(form.saleBTC)||0)-(parseFloat(form.costBTC)||0);
+ 
+  const PERIODS=[["all","All time"],["week","This week"],["month","This month"],["90d","Last 90d"]];
+ 
   return(
     <div style={{padding:"20px 16px"}}>
+ 
+      {/* Metrics */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:0,marginBottom:16,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
         <Metric label="Revenue" value={cbt4(totals.saleBTC)} color={T.green} sub={bp?cu(totals.saleBTC*bp):"—"}/>
         <Metric label="Cost" value={cbt4(totals.costBTC)} color={T.red} sub={bp?cu(totals.costBTC*bp):"—"}/>
@@ -524,48 +701,79 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
         <Metric label="Pending" value={pending} color={T.red} sub={`${done} delivered`}/>
         {bp&&<Metric label="Live Profit $" value={cu(totals.profitUSD)} color={T.purple} sub={`@ ${cu(bp)}`}/>}
       </div>
-
-      {/* Vendor bar */}
+ 
+      {/* Top vendors this period */}
+      {topVendors.length>0&&(
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:8}}>Top Vendors</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {topVendors.map(([v,d])=>(
+              <div key={v} style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:12,color:T.textS,fontWeight:600,fontFamily:T.mono}}>{v}</span>
+                <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{d.count} orders</span>
+                <span style={{fontSize:11,color:T.blue,fontWeight:600,fontFamily:T.mono}}>{cbt4(d.profit)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+ 
+      {/* Vendor management bar */}
       <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 16px",marginBottom:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
         <span style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Vendors:</span>
         {vendors.map(v=>(
           <div key={v} style={{display:"flex",alignItems:"center",gap:4,background:"#F3F4F6",border:`1px solid ${T.border}`,borderRadius:4,padding:"3px 10px"}}>
             <span style={{fontSize:11,color:T.textS,fontFamily:T.mono}}>{v}</span>
-            <button onClick={()=>setVendors(vs=>vs.filter(x=>x!==v))} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:12,paddingLeft:4,lineHeight:1}}>×</button>
+            <button onClick={()=>removeVendor(v)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:12,paddingLeft:4,lineHeight:1}}>×</button>
           </div>
         ))}
         {showVendorInput?(
           <div style={{display:"flex",gap:6}}>
-            <input value={newVendor} onChange={e=>setNewVendor(e.target.value)} onKeyDown={e=>e.key==="Enter"&&newVendor.trim()&&(setVendors(v=>[...v,newVendor.trim()]),setNewVendor(""),setShowVendorInput(false))} placeholder="Vendor name" autoFocus style={{...inp,width:130,padding:"4px 8px"}}/>
-            <button onClick={()=>newVendor.trim()&&(setVendors(v=>[...v,newVendor.trim()]),setNewVendor(""),setShowVendorInput(false))} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"4px 10px",fontSize:11,cursor:"pointer",fontFamily:T.mono}}>Add</button>
+            <input value={newVendor} onChange={e=>setNewVendor(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addVendor()} placeholder="Vendor name" autoFocus style={{...inp,width:130,padding:"4px 8px"}}/>
+            <button onClick={addVendor} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"4px 10px",fontSize:11,cursor:"pointer",fontFamily:T.mono}}>Add</button>
             <button onClick={()=>setShowVendorInput(false)} style={{background:"none",border:"none",color:T.textM,cursor:"pointer",fontSize:14}}>×</button>
           </div>
         ):(
           <button onClick={()=>setShowVendorInput(true)} style={{background:"#F3F4F6",border:`1px solid ${T.border}`,color:T.textM,borderRadius:4,padding:"3px 10px",fontSize:10,cursor:"pointer",fontFamily:T.mono}}>+ Add vendor</button>
         )}
       </div>
-
+ 
       {/* New order form */}
       {showForm&&(
         <Card style={{marginBottom:16,padding:"20px"}}>
           <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",marginBottom:16,fontFamily:T.mono,fontWeight:500}}>New Order</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
-          <div><label style={lbl}>Vendor</label>
-               <select value={form.vendor} onChange={e=>setForm(f=>({...f,vendor:e.target.value}))} style={{...inp,cursor:"pointer"}}>
-              {vendors.map(v=><option key={v}>{v}</option>)}
-            </select>
-           </div>
-           <div><label style={lbl}>Customer</label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:12}}>
+            <div><label style={lbl}>Vendor</label>
+              <select value={form.vendor} onChange={e=>setForm(f=>({...f,vendor:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+                {vendors.map(v=><option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+            <div><label style={lbl}>Customer</label>
               <input value={form.client} onChange={e=>setForm(f=>({...f,client:e.target.value}))} placeholder="e.g. Brooks" style={inp}/>
-           </div>
-             <div><label style={lbl}>Platform</label>
-             <select value={form.platform||""} onChange={e=>setForm(f=>({...f,platform:e.target.value}))} style={{...inp,cursor:"pointer"}}>
-             <option value="">—</option>
-              {["Discord","Telegram","WhatsApp","Instagram","Email"].map(p=><option key={p}>{p}</option>)}
-           </select>
-         </div>
-        </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+            </div>
+            <div><label style={lbl}>Platform</label>
+              <select value={form.platform} onChange={e=>setForm(f=>({...f,platform:e.target.value}))} style={{...inp,cursor:"pointer"}}>
+                <option value="">— none —</option>
+                {PLATFORM_OPTIONS.map(p=><option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label style={lbl}>Items</label>
+            <input value={form.items} onChange={e=>setForm(f=>({...f,items:e.target.value}))} placeholder="RT10, CU100*2, BA10*3..." style={inp}/>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+              {PRESET_ITEMS.map(code=>{
+                const active=form.items.split(",").map(s=>s.trim()).includes(code);
+                return(
+                  <button key={code} type="button" onClick={()=>togglePresetItem(code)}
+                    style={{background:active?T.text:"#F3F4F6",color:active?"#fff":T.textM,border:`1px solid ${active?T.text:T.border}`,borderRadius:4,padding:"4px 10px",fontSize:11,cursor:"pointer",fontFamily:T.mono}}>
+                    {code}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:12}}>
             <div>
               <label style={lbl}>Sale (BTC)</label>
               <input type="number" step="0.000001" value={form.saleBTC} onChange={e=>setForm(f=>({...f,saleBTC:e.target.value}))} placeholder="0.005800" style={inp}/>
@@ -578,64 +786,115 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
             </div>
             <div>
               <label style={lbl}>Profit (auto)</label>
-              <div style={{background:"#F9FAFB",border:`1px solid ${T.border}`,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,color:profitPreview>0?T.green:T.textD}}>{form.saleBTC||form.costBTC?cbt6(profitPreview):"—"}</div>
+              <div style={{background:"#F9FAFB",border:`1px solid ${T.border}`,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,color:profitPreview>0?T.green:T.textD}}>
+                {form.saleBTC||form.costBTC?cbt6(profitPreview):"—"}
+              </div>
               {(form.saleBTC||form.costBTC)&&bp&&<div style={{fontSize:10,color:T.purple,marginTop:3,fontFamily:T.mono}}>≈ {cu(profitPreview*bp)}</div>}
             </div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:12,marginBottom:16}}>
-            <div><label style={lbl}>Items</label><input value={form.items} onChange={e=>setForm(f=>({...f,items:e.target.value}))} placeholder="RT10, CU100*2, BA10*3..." style={inp}/></div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr",gap:14,marginBottom:16,maxWidth:200}}>
             <div><label style={lbl}>Date</label><input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={inp}/></div>
           </div>
           <div style={{display:"flex",gap:8}}>
-            <button onClick={submitOrder} disabled={!form.client||!form.saleBTC} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 24px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Save Order</button>
-            <button onClick={()=>setShowForm(false)} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:5,padding:"9px 16px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+            <button onClick={submitOrder} disabled={!form.client.trim()||!form.saleBTC} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 24px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Save Order</button>
+            <button onClick={()=>{setShowForm(false);setForm({...emptyForm,vendor:vendors[0]||"Violet"});}} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:5,padding:"9px 16px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
           </div>
         </Card>
       )}
-
+ 
+      {/* Filter bar */}
+      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
+        <div style={{display:"flex",gap:4,background:"#F3F4F6",borderRadius:6,padding:3}}>
+          {PERIODS.map(([k,label])=>(
+            <button key={k} onClick={()=>setPeriod(k)}
+              style={{background:period===k?T.white:"transparent",color:period===k?T.text:T.textM,border:"none",borderRadius:4,padding:"5px 10px",fontSize:11,cursor:"pointer",fontFamily:T.mono,fontWeight:period===k?600:400,boxShadow:period===k?"0 1px 2px rgba(0,0,0,0.08)":"none"}}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <select value={statusF} onChange={e=>setStatusF(e.target.value)} style={sel}>
+          <option value="all">All status</option>
+          <option value="pending">Pending</option>
+          <option value="delivered">Delivered</option>
+        </select>
+        <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={sel}>
+          <option value="date">Sort: Newest</option>
+          <option value="profit">Sort: Profit</option>
+          <option value="client">Sort: Client</option>
+        </select>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search client, vendor, items..."
+          style={{...sel,flex:1,minWidth:180,cursor:"text"}}/>
+      </div>
+ 
+      {/* Order list */}
       <Card>
         <div style={{padding:"13px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",background:"#FAFBFC"}}>
-          <span style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Order Book · {orders.length} · {pending} pending</span>
-          <button onClick={()=>setShowForm(true)} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"6px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>+ New Order</button>
+          <span style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Order Book · {filtered.length} shown</span>
+          <button onClick={()=>{setForm({...emptyForm,vendor:vendors[0]||"Violet"});setShowForm(true);}} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"6px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>+ New Order</button>
         </div>
-        <div style={{overflowX:"auto"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
-            <thead><tr>
-            {["Date","Vendor","Customer","Platform","Items","Sale ₿","Cost ₿","Profit ₿","Profit $","Margin","Delivered",""].map(h=>(
-                <th key={h} style={{...thS,textAlign:["Sale ₿","Cost ₿","Profit ₿","Profit $","Margin"].includes(h)?"right":"left"}}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {orders.length===0&&<tr><td colSpan={11} style={{...tdS,textAlign:"center",color:T.textD,padding:"48px"}}>No orders yet.</td></tr>}
-              {orders.map(o=>{const s=orderStats(o);return(
-                <tr key={o.id} style={{opacity:o.delivered?0.4:1,transition:"opacity 0.2s"}}>
-                  <td style={{...tdS,color:T.textD}}>{o.date}</td>
-                  <td style={{...tdS,color:T.textM}}>{o.vendor||"—"}</td>
-                  <td style={{...tdS,color:T.textS,fontWeight:600}}>{o.client}</td>
-                  <td style={{...tdS,color:T.textM}}>{o.platform||"—"}</td>
-                  <td style={{...tdS,color:T.textM,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={o.items||""}>{o.items||"—"}</td>
-                  <td style={{...tdS,textAlign:"right",color:T.green,fontWeight:600}}>{cbt6(s.saleBTC)}</td>
-                  <td style={{...tdS,textAlign:"right",color:T.red}}>{cbt6(s.costBTC)}</td>
-                  <td style={{...tdS,textAlign:"right",color:T.blue,fontWeight:700}}>{cbt6(s.profitBTC)}</td>
-                  <td style={{...tdS,textAlign:"right",color:bp?T.purple:T.textD,fontWeight:700}}>{bp?cu(s.profitUSD):"—"}</td>
-                  <td style={{...tdS,textAlign:"right",color:s.margin>0.2?T.green:T.gold}}>{cp(s.margin)}</td>
-                  <td style={{...tdS,textAlign:"center"}}><input type="checkbox" checked={!!o.delivered} onChange={()=>onUpdateOrder(o.id,{delivered:!o.delivered,status:!o.delivered?"delivered":"pending"})} style={{width:15,height:15,cursor:"pointer",accentColor:T.text}}/></td>
-                  <td style={tdS}><button onClick={()=>onDeleteOrder&&onDeleteOrder(o.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14}}>×</button></td>
-                </tr>
-              );})}
-            </tbody>
-            {orders.length>0&&<tfoot><tr style={{borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
-              <td colSpan={4} style={{...tdS,color:T.textM,fontWeight:700,fontSize:11}}>TOTAL</td>
-              <td style={{...tdS,textAlign:"right",color:T.green,fontWeight:700}}>{cbt6(totals.saleBTC)}</td>
-              <td style={{...tdS,textAlign:"right",color:T.red,fontWeight:700}}>{cbt6(totals.costBTC)}</td>
-              <td style={{...tdS,textAlign:"right",color:T.blue,fontWeight:700}}>{cbt6(totals.profitBTC)}</td>
-              <td style={{...tdS,textAlign:"right",color:T.purple,fontWeight:700}}>{bp?cu(totals.profitUSD):"—"}</td>
-              <td style={{...tdS,textAlign:"right",color:T.gold,fontWeight:700}}>{cp(avgMargin)}</td>
-              <td style={tdS}/><td style={tdS}/>
-            </tr></tfoot>}
-          </table>
-        </div>
+ 
+        {filtered.length===0&&<div style={{padding:"48px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>No orders match your filters.</div>}
+ 
+        {filtered.map((o,i)=>{
+          const s=orderStats(o);
+          return(
+            <div key={o.id} style={{display:"flex",alignItems:"center",gap:14,padding:"14px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",opacity:o.delivered?0.55:1,transition:"opacity 0.2s"}}>
+              {/* Delivery toggle */}
+              <input type="checkbox" checked={!!o.delivered} onChange={()=>onUpdateOrder(o.id,{delivered:!o.delivered,status:!o.delivered?"delivered":"pending"})}
+                style={{width:16,height:16,cursor:"pointer",accentColor:T.text,flexShrink:0}}/>
+ 
+              {/* Main info */}
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <span style={{fontSize:13,color:T.textS,fontWeight:600}}>{o.client}</span>
+                  <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{o.vendor}</span>
+                  {o.platform&&<Badge color={T.blue}>{o.platform}</Badge>}
+                  {o.delivered&&<Badge color={T.green}>delivered</Badge>}
+                </div>
+                <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {o.items||"—"} · {o.date}
+                </div>
+              </div>
+ 
+              {/* Numbers */}
+              <div style={{display:"flex",gap:16,alignItems:"center",flexShrink:0}}>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>Sale</div>
+                  <div style={{fontSize:12,color:T.green,fontWeight:600,fontFamily:T.mono}}>{cbt6(s.saleBTC)}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>Cost</div>
+                  <div style={{fontSize:12,color:T.red,fontFamily:T.mono}}>{cbt6(s.costBTC)}</div>
+                </div>
+                <div style={{textAlign:"right",minWidth:90}}>
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>Profit</div>
+                  <div style={{fontSize:13,color:T.blue,fontWeight:700,fontFamily:T.mono}}>{cbt6(s.profitBTC)}</div>
+                  {bp&&<div style={{fontSize:10,color:T.purple,fontFamily:T.mono}}>{cu(s.profitUSD)}</div>}
+                </div>
+                <div style={{textAlign:"right",minWidth:44}}>
+                  <div style={{fontSize:12,color:s.margin>0.2?T.green:T.gold,fontWeight:600,fontFamily:T.mono}}>{cp(s.margin)}</div>
+                </div>
+              </div>
+ 
+              <button onClick={()=>onDeleteOrder&&onDeleteOrder(o.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16,flexShrink:0}}>×</button>
+            </div>
+          );
+        })}
+ 
+        {filtered.length>0&&(
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
+            <span style={{fontSize:11,color:T.textM,fontWeight:700,fontFamily:T.mono}}>TOTAL ({filtered.length})</span>
+            <div style={{display:"flex",gap:20,alignItems:"baseline"}}>
+              <span style={{fontSize:12,color:T.green,fontWeight:700,fontFamily:T.mono}}>{cbt6(totals.saleBTC)}</span>
+              <span style={{fontSize:12,color:T.red,fontWeight:700,fontFamily:T.mono}}>{cbt6(totals.costBTC)}</span>
+              <span style={{fontSize:13,color:T.blue,fontWeight:700,fontFamily:T.mono}}>{cbt6(totals.profitBTC)}</span>
+              {bp&&<span style={{fontSize:13,color:T.purple,fontWeight:700,fontFamily:T.mono}}>{cu(totals.profitUSD)}</span>}
+              <span style={{fontSize:12,color:T.gold,fontWeight:700,fontFamily:T.mono}}>{cp(avgMargin)}</span>
+            </div>
+          </div>
+        )}
       </Card>
+ 
       {bp&&totals.profitBTC>0&&(
         <div style={{marginTop:10,background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
           <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,letterSpacing:"0.1em",textTransform:"uppercase"}}>Profit @ live BTC</span>
@@ -649,161 +908,329 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
     </div>
   );
 }
-
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function Analytics({st,bp}){
-  const{ledger,rates}=st;
+  const{ledger,rates,orders}=st;
   const today=new Date();
   const[monthOffset,setMonthOffset]=useState(0);
-
+ 
   const targetDate=new Date(today.getFullYear(),today.getMonth()+monthOffset,1);
   const year=targetDate.getFullYear();
   const month=targetDate.getMonth();
   const monthStr=`${year}-${String(month+1).padStart(2,"0")}`;
   const monthLabel=`${MONTHS_SHORT[month]} ${year}`;
-
-  // Split month into 4 weeks
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const isCurrentMonth=monthOffset===0;
+  // How many days of THIS month have actually elapsed (for fair comparison + run rate)
+  const daysElapsed=isCurrentMonth?today.getDate():daysInMonth;
+ 
+  const prevDate=new Date(year,month-1,1);
+  const prevMonthStr=`${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,"0")}`;
+  const prevMonthLabel=MONTHS_SHORT[prevDate.getMonth()];
+ 
+  const md=buildMonth(monthStr,ledger,bp,rates);
+ 
+  // ── Fair comparison window ──
+  // Same-day-count slice of the previous month (e.g. July 1-3 if today is Aug 3)
+  function buildPartialMonth(ym,endDay){
+    const entries=ledger.filter(e=>{
+      if(!e.date?.startsWith(ym))return false;
+      const day=parseInt(e.date.slice(8,10));
+      return day<=endDay;
+    });
+    const inc=entries.filter(e=>e.type==="income").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+    const cost=entries.filter(e=>e.type==="expense").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+    return{inc,cost};
+  }
+ 
+  // The comparison baseline — fair depending on whether we're mid-month or looking at history
+  const compareLabel = isCurrentMonth ? `first ${daysElapsed}d of ${prevMonthLabel}` : `all of ${prevMonthLabel}`;
+  const compareBaseline = isCurrentMonth
+    ? buildPartialMonth(prevMonthStr, daysElapsed)
+    : buildMonth(prevMonthStr,ledger,bp,rates);
+ 
+  // Daily averages — the only truly comparable unit across partial/full periods
+  const dailyAvgIncome = daysElapsed>0 ? md.inc/daysElapsed : 0;
+  const dailyAvgSpend  = daysElapsed>0 ? md.cost/daysElapsed : 0;
+  const prevDailyAvgIncome = isCurrentMonth
+    ? (daysElapsed>0?compareBaseline.inc/daysElapsed:0)
+    : (daysInMonth>0?compareBaseline.inc/daysInMonth:0);
+  const prevDailyAvgSpend = isCurrentMonth
+    ? (daysElapsed>0?compareBaseline.cost/daysElapsed:0)
+    : (daysInMonth>0?compareBaseline.cost/daysInMonth:0);
+ 
+  // Run rate — where the current month is projected to land if the pace holds
+  const projectedIncome = isCurrentMonth ? dailyAvgIncome*daysInMonth : md.inc;
+  const projectedSpend  = isCurrentMonth ? dailyAvgSpend*daysInMonth : md.cost;
+ 
+  // ── Weekly split (unchanged — already fair since it's within-month) ──
   function getWeeks(){
     const weeks=[];
-    const daysInMonth=new Date(year,month+1,0).getDate();
-    const ranges=[
-      {label:"Week 1",start:1,end:7},
-      {label:"Week 2",start:8,end:14},
-      {label:"Week 3",start:15,end:21},
-      {label:"Week 4",start:22,end:daysInMonth},
-    ];
+    const ranges=[{label:"Week 1",start:1,end:7},{label:"Week 2",start:8,end:14},{label:"Week 3",start:15,end:21},{label:"Week 4",start:22,end:daysInMonth}];
     ranges.forEach(r=>{
       const startStr=`${year}-${String(month+1).padStart(2,"0")}-${String(r.start).padStart(2,"0")}`;
       const endStr=`${year}-${String(month+1).padStart(2,"0")}-${String(r.end).padStart(2,"0")}`;
-      const entries=ledger.filter(e=>e.date&&e.date>=startStr&&e.date<=endStr&&e.type==="expense");
+      const expEntries=ledger.filter(e=>e.date&&e.date>=startStr&&e.date<=endStr&&e.type==="expense");
+      const incEntries=ledger.filter(e=>e.date&&e.date>=startStr&&e.date<=endStr&&e.type==="income");
       const cats={};
-      EXPENSE_CATS.forEach(c=>{
-        cats[c]=entries.filter(e=>e.category===c).reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
-      });
-      const total=entries.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
-      weeks.push({...r,cats,total,entries});
+      EXPENSE_CATS.forEach(c=>{cats[c]=expEntries.filter(e=>e.category===c).reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);});
+      const expTotal=expEntries.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+      const incTotal=incEntries.reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
+      weeks.push({...r,cats,expTotal,incTotal});
     });
     return weeks;
   }
-
   const weeks=getWeeks();
-  const monthTotal=weeks.reduce((s,w)=>s+w.total,0);
-  const monthIncome=ledger.filter(e=>e.date?.startsWith(monthStr)&&e.type==="income").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
-
-  // Chart data — one bar group per week, each bar is total spend
-  const chartData=weeks.map(w=>({
-    week:w.label,
-    total:Math.round(w.total),
-    ...Object.fromEntries(EXPENSE_CATS.map(c=>[c,Math.round(w.cats[c]||0)])),
-  }));
-
-  const COLORS={"Dad":"#DC2626","Mom":"#EA580C","Sam":"#D97706","Glenn":"#65A30D","Personal":"#0891B2","Dating":"#7C3AED","Gas":"#6B7280","Gear":"#1D4ED8","Miscellaneous":"#9CA3AF","Family":"#16A34A","Debt Repayment":"#111827"};
-
-  // Top categories across the month
-  const topCats=EXPENSE_CATS.map(c=>({
-    name:c,
-    total:weeks.reduce((s,w)=>s+(w.cats[c]||0),0),
-    byWeek:weeks.map(w=>w.cats[c]||0),
-  })).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
-
+  const monthTotal=weeks.reduce((s,w)=>s+w.expTotal,0);
+  const monthIncome=weeks.reduce((s,w)=>s+w.incTotal,0);
+  const chartData=weeks.map(w=>({week:w.label,income:Math.round(w.incTotal),spend:Math.round(w.expTotal),net:Math.round(w.incTotal-w.expTotal)}));
+ 
+  const incomeEntries=ledger.filter(e=>e.date?.startsWith(monthStr)&&e.type==="income");
+  const incomeBySource={};
+  incomeEntries.forEach(e=>{
+    const key=e.category==="Dropshipping"?"Dropshipping":(e.account||"Other");
+    incomeBySource[key]=(incomeBySource[key]||0)+toUSD(e.amount,e.currency,rates,bp);
+  });
+  const incomeSourceData=Object.entries(incomeBySource).map(([name,value])=>({name,value:Math.round(value)})).sort((a,b)=>b.value-a.value);
+  const INCOME_COLORS=[T.green,T.blue,T.gold,T.purple,"#14B8A6","#EC4899"];
+ 
+  const COLORS=[T.red,"#EA580C",T.gold,T.green,T.blue,T.purple,"#EC4899","#14B8A6"];
+  const topCats=EXPENSE_CATS.map(c=>({name:c,total:weeks.reduce((s,w)=>s+(w.cats[c]||0),0),byWeek:weeks.map(w=>w.cats[c]||0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
+ 
+  // ═══════════════════════════════════════════════════════════════════════
+  // FAIR INSIGHTS
+  // ═══════════════════════════════════════════════════════════════════════
+  const insights=[];
+ 
+  // 1. Income — daily-average comparison, not raw totals
+  if(prevDailyAvgIncome>0){
+    const chg=((dailyAvgIncome-prevDailyAvgIncome)/prevDailyAvgIncome)*100;
+    insights.push({
+      type: chg>=0?"good":"warn",
+      text: `Daily income average is ${chg>=0?"up":"down"} ${Math.abs(chg).toFixed(0)}% vs ${compareLabel} (${cu(prevDailyAvgIncome)}/day → ${cu(dailyAvgIncome)}/day).`,
+    });
+  }
+ 
+  // 2. Spend — daily-average comparison
+  if(prevDailyAvgSpend>0){
+    const chg=((dailyAvgSpend-prevDailyAvgSpend)/prevDailyAvgSpend)*100;
+    insights.push({
+      type: chg<=0?"good":"warn",
+      text: `Daily spend average is ${chg<=0?"down":"up"} ${Math.abs(chg).toFixed(0)}% vs ${compareLabel} (${cu(prevDailyAvgSpend)}/day → ${cu(dailyAvgSpend)}/day).`,
+    });
+  }
+ 
+  // 3. Run rate — only meaningful for the current, in-progress month
+  if(isCurrentMonth&&daysElapsed>=2&&daysElapsed<daysInMonth){
+    insights.push({
+      type:"info",
+      text:`At the current pace (${daysElapsed} of ${daysInMonth} days in), you're on track for ≈${cu(projectedIncome)} income and ≈${cu(projectedSpend)} spend by end of ${monthLabel}.`,
+    });
+  }
+ 
+  // 4. Top category — always fair since it's a within-period share, not cross-period
+  if(topCats.length>0){
+    const top=topCats[0];
+    const pctOfSpend=monthTotal>0?(top.total/monthTotal*100):0;
+    insights.push({
+      type:"info",
+      text:`${top.name} is the biggest expense category so far ${isCurrentMonth?`this month (through day ${daysElapsed})`:"this month"} at ${cu(top.total)} (${pctOfSpend.toFixed(0)}% of spend).`,
+    });
+  }
+ 
+  // 5. Margin — a ratio, so it's naturally fair regardless of period length
+  if(md.inc>0){
+    const marginPct=md.margin*100;
+    insights.push({
+      type: marginPct>=50?"good":marginPct>=20?"info":"warn",
+      text: marginPct>=50
+        ? `Margin is strong at ${marginPct.toFixed(0)}% so far${isCurrentMonth?` (day ${daysElapsed})`:""}.`
+        : marginPct>=20
+        ? `Margin is ${marginPct.toFixed(0)}% so far — solid but tighten spend if you want to grow it.`
+        : `Margin is only ${marginPct.toFixed(0)}% so far — expenses are eating income fast.`,
+    });
+  }
+ 
+  // 6. Order profit — count-based, always fair to state as-is with a day marker
+  const monthOrders=orders.filter(o=>o.date?.startsWith(monthStr));
+  if(monthOrders.length>0){
+    const orderProfitBTC=monthOrders.reduce((s,o)=>s+(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0)),0);
+    insights.push({
+      type:"info",
+      text:`${monthOrders.length} orders ${isCurrentMonth?`through day ${daysElapsed}`:"this month"} generated ${cbt(orderProfitBTC)}${bp?` (${cu(orderProfitBTC*bp)})`:""} profit.`,
+    });
+  }
+ 
+  if(chartData.every(d=>d.income===0&&d.spend===0)){
+    return(
+      <div style={{padding:"20px 16px"}}>
+        <Card style={{padding:"64px 24px",textAlign:"center"}}>
+          <div style={{fontSize:28,marginBottom:12,color:T.textD}}>∿</div>
+          <div style={{color:T.textD,fontSize:13,fontFamily:T.mono}}>No data for {monthLabel}. Log income and expenses to see analytics.</div>
+        </Card>
+      </div>
+    );
+  }
+ 
   const th={textAlign:"left",padding:"10px 16px",color:T.textM,fontSize:10,letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"};
   const td={padding:"10px 16px",borderBottom:`1px solid #F9FAFB`,fontFamily:T.mono,fontSize:12};
-
+  const INSIGHT_STYLE={good:{bg:"#F0FDF4",border:"#BBF7D0",icon:"↑",color:T.green},warn:{bg:"#FEF2F2",border:"#FECACA",icon:"⚠",color:T.red},info:{bg:"#EFF6FF",border:"#BFDBFE",icon:"·",color:T.blue}};
+ 
   return(
     <div style={{padding:"20px 16px"}}>
-      {/* Month navigator */}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-        <span style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Monthly Spending · 4 Weeks</span>
-        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-          <button onClick={()=>setMonthOffset(m=>m-1)} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>‹</button>
-          <span style={{fontSize:12,fontWeight:600,color:T.text,fontFamily:T.sans,padding:"0 8px"}}>{monthLabel}</span>
-          <button onClick={()=>setMonthOffset(m=>Math.min(0,m+1))} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>›</button>
+ 
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:10}}>
+          Analytics {isCurrentMonth&&<span style={{color:T.textD,fontWeight:400}}>· day {daysElapsed} of {daysInMonth}</span>}
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {Array.from({length:6},(_,i)=>-i).reverse().map(offset=>{
+            const d=new Date(today.getFullYear(),today.getMonth()+offset,1);
+            const label=`${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+            const isActive=offset===monthOffset;
+            return(
+              <button key={offset} onClick={()=>setMonthOffset(offset)}
+                style={{background:isActive?T.text:T.white,color:isActive?"#fff":T.textM,border:`1px solid ${isActive?T.text:T.border}`,borderRadius:5,padding:"6px 14px",fontSize:11,fontWeight:isActive?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                {label}
+              </button>
+            );
+          })}
         </div>
       </div>
-
-      {/* Summary metrics */}
+ 
+      {/* Summary metrics — daily average is the headline for partial months */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:0,marginBottom:16,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
-        <Metric label="Total Spend" value={cu(monthTotal)} color={T.red} sub={cid(monthTotal*(rates.USDIDR||16200))}/>
-        <Metric label="Total Income" value={cu(monthIncome)} color={T.green}/>
+        <Metric label="Income (MTD)" value={cu(monthIncome)} color={T.green} sub={`${cu(dailyAvgIncome)}/day avg`}/>
+        <Metric label="Spend (MTD)" value={cu(monthTotal)} color={T.red} sub={`${cu(dailyAvgSpend)}/day avg`}/>
         <Metric label="Net" value={cu(monthIncome-monthTotal)} color={monthIncome-monthTotal>=0?T.green:T.red}/>
         <Metric label="Margin" value={monthIncome>0?cp((monthIncome-monthTotal)/monthIncome):"—"} color={T.gold}/>
+        {isCurrentMonth&&<Metric label="Projected (EOM)" value={cu(projectedIncome-projectedSpend)} color={T.purple} sub="net at current pace"/>}
       </div>
-
-      {/* Weekly spend chart */}
+ 
+      {insights.length>0&&(
+        <Card style={{marginBottom:16}}>
+          <CardHeader title="Insights"/>
+          <div style={{padding:"14px 20px",display:"flex",flexDirection:"column",gap:10}}>
+            {insights.map((ins,i)=>{
+              const s=INSIGHT_STYLE[ins.type];
+              return(
+                <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start",background:s.bg,border:`1px solid ${s.border}`,borderRadius:8,padding:"10px 14px"}}>
+                  <span style={{fontSize:14,color:s.color,flexShrink:0,marginTop:1}}>{s.icon}</span>
+                  <span style={{fontSize:12,color:T.textS,fontFamily:T.sans,lineHeight:1.5}}>{ins.text}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+ 
       <Card style={{marginBottom:16}}>
-        <CardHeader title="Spend per Week"/>
+        <CardHeader title="Income vs Spend per Week"/>
         <div style={{padding:"12px 0 8px"}}>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData} barGap={2}>
+          <ResponsiveContainer width="100%" height={190}>
+            <BarChart data={chartData} barGap={3}>
               <XAxis dataKey="week" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
               <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
               <Tooltip content={<CustomTooltip/>}/>
-              {topCats.slice(0,6).map((c,i)=>(
-                <Bar key={c.name} dataKey={c.name} stackId="a" fill={COLORS[c.name]||T.textD} name={c.name} radius={i===topCats.slice(0,6).length-1?[3,3,0,0]:[0,0,0,0]}/>
-              ))}
+              <Bar dataKey="income" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
+              <Bar dataKey="spend"  fill="#DC262618" stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Spend"/>
+              <Bar dataKey="net"    fill="#1D4ED818" stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
             </BarChart>
           </ResponsiveContainer>
         </div>
-        {/* Legend */}
-        <div style={{padding:"0 20px 14px",display:"flex",flexWrap:"wrap",gap:10}}>
-          {topCats.slice(0,6).map(c=>(
-            <div key={c.name} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.textS}}>
-              <div style={{width:8,height:8,borderRadius:2,background:COLORS[c.name]||T.textD,flexShrink:0}}/>
-              <span style={{fontFamily:T.mono}}>{c.name}</span>
-            </div>
-          ))}
-        </div>
       </Card>
-
-      {/* Category breakdown table — week by week */}
-      <Card>
-        <CardHeader title="Category Breakdown by Week"/>
-        <div style={{overflowX:"auto"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:500}}>
-            <thead><tr>
-              <th style={{...th,width:140}}>Category</th>
-              {weeks.map(w=><th key={w.label} style={{...th,textAlign:"right"}}>{w.label}<div style={{fontSize:9,color:T.textD,fontWeight:400}}>({w.label==="Week 1"?"1-7":w.label==="Week 2"?"8-14":w.label==="Week 3"?"15-21":`22-${new Date(year,month+1,0).getDate()}`})</div></th>)}
-              <th style={{...th,textAlign:"right"}}>Total</th>
-            </tr></thead>
-            <tbody>
-              {topCats.map((c,i)=>(
-                <tr key={c.name}>
-                  <td style={{...td,display:"flex",alignItems:"center",gap:6}}>
-                    <div style={{width:8,height:8,borderRadius:2,background:COLORS[c.name]||T.textD,flexShrink:0}}/>
-                    <span style={{color:T.textS}}>{c.name}</span>
-                  </td>
-                  {c.byWeek.map((v,wi)=>(
-                    <td key={wi} style={{...td,textAlign:"right",color:v>0?T.red:T.textD}}>
-                      {v>0?<div><div>{cu(v)}</div><div style={{fontSize:9,color:T.gold}}>{cid(v*(rates.USDIDR||16200))}</div></div>:"—"}
-                    </td>
-                  ))}
-                  <td style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>
-                    <div>{cu(c.total)}</div>
-                    <div style={{fontSize:9,color:T.gold}}>{cid(c.total*(rates.USDIDR||16200))}</div>
-                  </td>
-                </tr>
-              ))}
-              <tr style={{borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
-                <td style={{...td,fontWeight:700,color:T.text}}>Total</td>
-                {weeks.map((w,i)=>(
-                  <td key={i} style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>
-                    <div>{cu(w.total)}</div>
-                    <div style={{fontSize:9,color:T.gold}}>{cid(w.total*(rates.USDIDR||16200))}</div>
-                  </td>
+ 
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+        <Card>
+          <CardHeader title="Income Sources"/>
+          {incomeSourceData.length===0
+            ?<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No income logged this month.</div>
+            :<>
+              <ResponsiveContainer width="100%" height={140}>
+                <PieChart>
+                  <Pie data={incomeSourceData} cx="50%" cy="50%" innerRadius={35} outerRadius={60} dataKey="value" paddingAngle={2}>
+                    {incomeSourceData.map((e,i)=><Cell key={i} fill={INCOME_COLORS[i%INCOME_COLORS.length]}/>)}
+                  </Pie>
+                  <Tooltip formatter={v=>cu(v)}/>
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={{padding:"0 16px 14px",display:"flex",flexDirection:"column",gap:4}}>
+                {incomeSourceData.map((d,i)=>(
+                  <div key={d.name} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:T.textS}}>
+                    <span style={{display:"flex",alignItems:"center",gap:6,fontFamily:T.mono}}>
+                      <div style={{width:6,height:6,borderRadius:"50%",background:INCOME_COLORS[i%INCOME_COLORS.length]}}/>
+                      {d.name}
+                    </span>
+                    <span style={{fontFamily:T.mono,fontWeight:600}}>{cu(d.value)}</span>
+                  </div>
                 ))}
-                <td style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>
-                  <div>{cu(monthTotal)}</div>
-                  <div style={{fontSize:9,color:T.gold}}>{cid(monthTotal*(rates.USDIDR||16200))}</div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </Card>
+              </div>
+            </>
+          }
+        </Card>
+ 
+        <Card>
+          <CardHeader title="Spend by Category"/>
+          {topCats.length===0
+            ?<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No expenses this month.</div>
+            :<div style={{padding:"16px 20px"}}>
+              {topCats.map((c,i)=>{
+                const pctVal=monthTotal>0?c.total/monthTotal:0;
+                return(
+                  <div key={c.name} style={{marginBottom:10}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4,fontFamily:T.mono}}>
+                      <span style={{color:T.textS}}>{c.name}</span>
+                      <span style={{color:COLORS[i%COLORS.length],fontWeight:600}}>{cu(c.total)} <span style={{color:T.textD,fontWeight:400}}>({(pctVal*100).toFixed(0)}%)</span></span>
+                    </div>
+                    <div style={{height:3,background:"#F3F4F6",borderRadius:2}}>
+                      <div style={{height:3,background:COLORS[i%COLORS.length],borderRadius:2,width:Math.min(100,pctVal*100)+"%"}}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          }
+        </Card>
+      </div>
+ 
+      {topCats.length>0&&(
+        <Card>
+          <CardHeader title="Category Breakdown by Week"/>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:500}}>
+              <thead><tr>
+                <th style={{...th,width:140}}>Category</th>
+                {weeks.map(w=><th key={w.label} style={{...th,textAlign:"right"}}>{w.label}</th>)}
+                <th style={{...th,textAlign:"right"}}>Total</th>
+              </tr></thead>
+              <tbody>
+                {topCats.map((c,i)=>(
+                  <tr key={c.name}>
+                    <td style={{...td,display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{width:8,height:8,borderRadius:2,background:COLORS[i%COLORS.length],flexShrink:0}}/>
+                      <span style={{color:T.textS}}>{c.name}</span>
+                    </td>
+                    {c.byWeek.map((v,wi)=>(
+                      <td key={wi} style={{...td,textAlign:"right",color:v>0?T.red:T.textD}}>{v>0?cu(v):"—"}</td>
+                    ))}
+                    <td style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>{cu(c.total)}</td>
+                  </tr>
+                ))}
+                <tr style={{borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
+                  <td style={{...td,fontWeight:700,color:T.text}}>Total</td>
+                  {weeks.map((w,i)=>(
+                    <td key={i} style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>{cu(w.expTotal)}</td>
+                  ))}
+                  <td style={{...td,textAlign:"right",color:T.red,fontWeight:700}}>{cu(monthTotal)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
-
 // ── Transfer Form ─────────────────────────────────────────────────────────────
 function TransferForm({wallets,rates,bp,onTransfer,showToast}){
   const[form,setForm]=useState({from:"metamask_btc",to:"coinbase_btc",amount:"",date:new Date().toISOString().slice(0,10)});
@@ -1520,11 +1947,33 @@ export default function App(){
   async function addOrder(o){
     setOrders(os=>[o,...os]);
     try{
-      await sb("orders","POST",{id:o.id,client:o.client,item:o.items,items:o.items,vendor:o.vendor,cost:o.costBTC,sale_price:o.saleBTC,btc_amount:o.saleBTC,date:o.date,status:o.status,delivered:o.delivered,delivery_days:null});
+      await sb("orders","POST",{
+        id: o.id,
+        client: o.client,
+        item: o.items,
+        items: o.items,
+        vendor: o.vendor,
+        platform: o.platform || "",
+        cost: o.costBTC,
+        sale_price: o.saleBTC,
+        btc_amount: o.saleBTC,
+        date: o.date,
+        status: o.status,
+        delivered: o.delivered,
+        delivery_days: null,
+      });
       const profitBTC=(parseFloat(o.saleBTC)||0)-(parseFloat(o.costBTC)||0);
-      if(profitBTC>0){const incomeEntry={type:"income",category:"Dropshipping",amount:profitBTC,currency:"BTC",account:"metamask_btc",label:`ORD-${o.id} — ${o.client} (${o.vendor})`,date:o.date};await applyTransactions([incomeEntry]);showToast(`✓ Order saved · +${profitBTC.toFixed(6)} ₿ → MetaMask`);}
-    }catch(e){console.error("Order save error:",e);}
+      if(profitBTC>0){
+        const incomeEntry={type:"income",category:"Dropshipping",amount:profitBTC,currency:"BTC",account:"metamask_btc",label:`ORD-${o.id} — ${o.client} (${o.vendor})`,date:o.date};
+        await applyTransactions([incomeEntry]);
+        showToast(`✓ Order saved · +${profitBTC.toFixed(6)} ₿ → MetaMask`);
+      }
+    }catch(e){
+      console.error("Order save error:",e);
+      showToast("⚠ Order save failed — check console");
+    }
   }
+
 
   async function updateOrder(id,patch){
     setOrders(os=>os.map(o=>o.id===id?{...o,...patch}:o));
