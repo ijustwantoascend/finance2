@@ -36,6 +36,18 @@ const pct = (a,b) => b?((a-b)/b*100).toFixed(1):"0.0";
 function toUSD(amount,currency,rates,bp){ const a=Math.abs(parseFloat(amount||0)); if(currency==="BTC")return a*(bp||0); if(currency==="SGD")return a/(rates.USDSGD||1.354); if(currency==="IDR")return a/(rates.USDIDR||16200); return a; }
 function totalBTC(w){ return (w.coinbase_btc||0)+(w.metamask_btc||0); }
 function totalUSDT(w){ return (w.coinbase_usdt||0)+(w.metamask_usdt||0); }
+function computeAvgCostBasis(ledger, fallback){
+  const btcIncome = ledger.filter(e=>e.type==="income"&&e.currency==="BTC"&&e.btcPriceAtTime);
+  if(btcIncome.length===0) return fallback||0;
+  let totalBTC=0, totalUSD=0;
+  btcIncome.forEach(e=>{
+    const amt=parseFloat(e.amount)||0;
+    const price=parseFloat(e.btcPriceAtTime)||0;
+    totalBTC+=amt;
+    totalUSD+=amt*price;
+  });
+  return totalBTC>0 ? totalUSD/totalBTC : (fallback||0);
+}
 function netWorth(w,bp,rates){ return totalBTC(w)*(bp||0)+totalUSDT(w)+(w.uob_sgd||0)/(rates.USDSGD||1.354)+(w.revolut_sgd||0)/(rates.USDSGD||1.354)+(w.bca_idr||0)/(rates.USDIDR||16200); }
 function buildMonth(ym,ledger,bp,rates){
   const hist=HISTORICAL[ym];
@@ -212,122 +224,231 @@ function Dashboard({st,bp}){
   const btcTotal=totalBTC(w);
   const btcPnL=bp&&btcCostBasis?(bp-btcCostBasis)*btcTotal:0;
   const btcPnLPct=btcCostBasis?((bp||0)-btcCostBasis)/btcCostBasis*100:0;
-  const thisM=new Date().toISOString().slice(0,7);
+ 
+  const today=new Date();
+  const thisM=today.toISOString().slice(0,7);
+  const daysInMonth=new Date(today.getFullYear(),today.getMonth()+1,0).getDate();
+  const daysElapsed=today.getDate();
   const md=buildMonth(thisM,ledger,bp,rates);
-  const allMonths=Array.from(new Set(ledger.map(e=>e.date?.slice(0,7)).filter(Boolean))).sort();
-  const chartData=allMonths.slice(-6).map(ym=>{const m=buildMonth(ym,ledger,bp,rates);return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],income:Math.round(m.inc),costs:Math.round(m.cost),net:Math.round(m.net)};});
-  const pieData=EXPENSE_CATS.map(c=>({name:c,value:md.cats[c]||0})).filter(d=>d.value>0).sort((a,b)=>b.value-a.value).slice(0,6);
-  const PIE_COLORS=["#DC2626","#D97706","#16A34A","#1D4ED8","#7C3AED","#EC4899"];
+  const dailyAvgIncome=daysElapsed>0?md.inc/daysElapsed:0;
+  const dailyAvgSpend=daysElapsed>0?md.cost/daysElapsed:0;
+ 
+  // ── Net worth trend — last 6 months, reconstructed from cumulative ledger ──
+  const allMonths=Array.from({length:6},(_,i)=>{
+    const d=new Date(today.getFullYear(),today.getMonth()-(5-i),1);
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  });
+  const nwTrend=allMonths.map(ym=>{
+    const m=buildMonth(ym,ledger,bp,rates);
+    return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],net:Math.round(m.net),income:Math.round(m.inc),cost:Math.round(m.cost)};
+  });
+ 
+  // ── Portfolio allocation ──
+  const allocation=[
+    {name:"BTC",value:btcTotal*(bp||0),color:T.gold},
+    {name:"USDT",value:totalUSDT(w),color:T.green},
+    {name:"SGD",value:((w.uob_sgd||0)+(w.revolut_sgd||0))/rates.USDSGD,color:T.blue},
+    {name:"IDR",value:(w.bca_idr||0)/(rates.USDIDR||16200),color:T.purple},
+  ].filter(a=>a.value>0.01);
+  const allocTotal=allocation.reduce((s,a)=>s+a.value,0);
+ 
+  // ── Recent activity — merged ledger + orders, sorted by date ──
+  const recentLedger=ledger.slice(0,6).map(e=>({
+    kind:"ledger",date:e.date,type:e.type,
+    label:e.label||e.category||"—",
+    amountUSD:toUSD(e.amount,e.currency,rates,bp),
+    sub:e.category||e.account,
+  }));
+  const recentOrders=orders.slice(0,4).map(o=>({
+    kind:"order",date:o.date,type:"order",
+    label:`${o.client} · ${o.vendor}`,
+    amountUSD:(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0))*(bp||0),
+    sub:o.delivered?"delivered":"pending",
+  }));
+  const activity=[...recentLedger,...recentOrders].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,8);
+ 
+  // ── Open orders ──
   const openOrders=orders.filter(o=>!o.delivered);
   const orderProfitBTC=orders.reduce((s,o)=>s+(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0)),0);
+  const monthOrders=orders.filter(o=>o.date?.startsWith(thisM));
+  const monthOrderProfitBTC=monthOrders.reduce((s,o)=>s+(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0)),0);
+ 
+  // ── Category spend snapshot (top 4) ──
+  const catSnapshot=EXPENSE_CATS.map(c=>({name:c,value:md.cats[c]||0})).filter(d=>d.value>0).sort((a,b)=>b.value-a.value).slice(0,4);
+  const PIE_COLORS=[T.red,T.gold,T.blue,T.purple];
+ 
+  // ── Runway estimate: liquid non-BTC balance / daily avg spend ──
+  const liquidUSD=totalUSDT(w)+((w.uob_sgd||0)+(w.revolut_sgd||0))/rates.USDSGD+(w.bca_idr||0)/(rates.USDIDR||16200);
+  const runwayDays=dailyAvgSpend>0?Math.floor(liquidUSD/dailyAvgSpend):null;
+ 
+  const ACT_ICON={income:"↓",expense:"↑",transfer:"⇄",order:"◈"};
+  const ACT_COLOR={income:T.green,expense:T.red,transfer:T.blue,order:T.purple};
+ 
   return(
     <div style={{paddingBottom:32}}>
-      {/* Hero */}
-      <div style={{padding:"32px 28px 28px",background:T.white,borderBottom:`1px solid ${T.border}`,marginBottom:1}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:20}}>
-          <div>
+ 
+      {/* ── Hero: Net Worth ── */}
+      <div style={{padding:"32px 28px 24px",background:T.white,borderBottom:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:24}}>
+          <div style={{flex:1,minWidth:260}}>
             <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",marginBottom:10,fontFamily:T.mono,fontWeight:500}}>Total Portfolio Value</div>
-            <div style={{display:"flex",alignItems:"baseline",gap:16,flexWrap:"wrap"}}>
-              <div style={{fontSize:44,fontWeight:800,letterSpacing:"-0.03em",color:T.text,lineHeight:1,fontFamily:T.sans}}>{bp?cu(nw):"—"}</div>
-              {bp&&btcPnL!==0&&<div style={{fontSize:13,color:btcPnL>=0?T.green:T.red,fontFamily:T.mono,fontWeight:500,padding:"3px 8px",background:btcPnL>=0?"#F0FDF4":"#FEF2F2",borderRadius:4}}>{btcPnL>=0?"▲":"▼"} {cu(Math.abs(btcPnL))} ({btcPnLPct.toFixed(1)}%)</div>}
+            <div style={{display:"flex",alignItems:"baseline",gap:14,flexWrap:"wrap"}}>
+              <div style={{fontSize:46,fontWeight:800,letterSpacing:"-0.03em",color:T.text,lineHeight:1,fontFamily:T.sans}}>{bp?cu(nw):"—"}</div>
+              {bp&&btcPnL!==0&&(
+                <div style={{fontSize:12,color:btcPnL>=0?T.green:T.red,fontFamily:T.mono,fontWeight:600,padding:"3px 8px",background:btcPnL>=0?"#F0FDF4":"#FEF2F2",borderRadius:4}}>
+                  {btcPnL>=0?"▲":"▼"} {cu(Math.abs(btcPnL))} BTC PnL ({btcPnLPct.toFixed(1)}%)
+                </div>
+              )}
             </div>
-            <div style={{display:"flex",gap:20,marginTop:8,flexWrap:"wrap"}}>
+            <div style={{display:"flex",gap:16,marginTop:8,flexWrap:"wrap"}}>
               <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{cbt(btcTotal)} @ {bp?cu(bp):"—"}/BTC</span>
               {bp&&<span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{csg(nw*rates.USDSGD)} SGD</span>}
               {bp&&<span style={{fontSize:11,color:T.gold,fontFamily:T.mono,fontWeight:500}}>{cid(nw*(rates.USDIDR||16200))}</span>}
             </div>
           </div>
-          <div style={{display:"flex",gap:28}}>
-            {[{label:"Income",val:cu(md.inc),color:T.green},{label:"Expenses",val:cu(md.cost),color:T.red},{label:"Margin",val:cp(md.margin),color:md.margin>0.5?T.green:T.gold}].map(m=>(
-              <div key={m.label} style={{textAlign:"right"}}>
-                <div style={{fontSize:10,color:T.textD,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:4,fontFamily:T.mono}}>{m.label}</div>
-                <div style={{fontSize:18,fontWeight:700,color:m.color,fontFamily:T.sans}}>{m.val}</div>
-                <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>this month</div>
-              </div>
-            ))}
+ 
+          {/* Net worth trend sparkline */}
+          <div style={{width:220,flexShrink:0}}>
+            <div style={{fontSize:10,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:6,fontFamily:T.mono,textAlign:"right"}}>6-Month Net Trend</div>
+            <ResponsiveContainer width="100%" height={64}>
+              <AreaChart data={nwTrend}>
+                <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={T.blue} stopOpacity={0.15}/><stop offset="95%" stopColor={T.blue} stopOpacity={0}/></linearGradient></defs>
+                <Area type="monotone" dataKey="net" stroke={T.blue} strokeWidth={1.75} fill="url(#nwg)" dot={false}/>
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </div>
       </div>
-
-      {/* Metrics */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:0,borderBottom:`1px solid ${T.border}`}}>
-        <Metric label="BTC Holdings" value={cbt(btcTotal)} color={T.gold} sub={bp?cu(btcTotal*bp):undefined}/>
-        <Metric label="Net (mo)" value={cu(md.net)} color={md.net>=0?T.green:T.red}/>
-        <Metric label="Open Orders" value={openOrders.length} color={T.blue}/>
-        <Metric label="Order Profit" value={cbt(orderProfitBTC)} color={T.purple} sub={bp?cu(orderProfitBTC*bp):undefined}/>
+ 
+      {/* ── Key metrics row ── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:0,borderBottom:`1px solid ${T.border}`}}>
+        <Metric label="Income (MTD)" value={cu(md.inc)} color={T.green} sub={`${cu(dailyAvgIncome)}/day avg`}/>
+        <Metric label="Spend (MTD)" value={cu(md.cost)} color={T.red} sub={`${cu(dailyAvgSpend)}/day avg`}/>
+        <Metric label="Net (MTD)" value={cu(md.net)} color={md.net>=0?T.green:T.red}/>
+        <Metric label="Margin" value={md.inc>0?cp(md.margin):"—"} color={md.margin>0.5?T.green:T.gold}/>
+        <Metric label="Runway" value={runwayDays!==null?`${runwayDays}d`:"—"} color={T.blue} sub="liquid ÷ daily spend"/>
+        <Metric label="Open Orders" value={openOrders.length} color={T.purple} sub={`${cbt(orderProfitBTC)} total profit`}/>
       </div>
-
-      {/* Charts row */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,padding:"16px 16px 0"}}>
+ 
+      {/* ── Portfolio allocation + Cash flow chart ── */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1.4fr",gap:16,padding:"16px 16px 0"}}>
         <Card>
-          <CardHeader title="Monthly P&L"/>
-          {chartData.length===0
-            ?<div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>No data yet — log income to see charts.</div>
-            :<div style={{padding:"12px 0 8px"}}>
-              <ResponsiveContainer width="100%" height={160}>
-                <BarChart data={chartData} barGap={3}>
-                  <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
-                  <YAxis hide/>
-                  <Tooltip content={<CustomTooltip/>}/>
-                  <Bar dataKey="income" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
-                  <Bar dataKey="costs"  fill="#DC262618" stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Costs"/>
-                  <Bar dataKey="net"    fill="#1D4ED818" stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          }
-        </Card>
-        <Card>
-          <CardHeader title="Expense Breakdown"/>
-          {pieData.length===0
-            ?<div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>No expenses logged yet.</div>
+          <CardHeader title="Portfolio Allocation"/>
+          {allocation.length===0
+            ?<div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:12,fontFamily:T.mono}}>No balances yet.</div>
             :<>
               <ResponsiveContainer width="100%" height={140}>
                 <PieChart>
-                  <Pie data={pieData} cx="50%" cy="50%" innerRadius={35} outerRadius={65} dataKey="value" paddingAngle={2}>
-                    {pieData.map((e,i)=><Cell key={i} fill={PIE_COLORS[i%PIE_COLORS.length]}/>)}
+                  <Pie data={allocation} cx="50%" cy="50%" innerRadius={38} outerRadius={65} dataKey="value" paddingAngle={2}>
+                    {allocation.map((a,i)=><Cell key={i} fill={a.color}/>)}
                   </Pie>
                   <Tooltip formatter={v=>cu(v)}/>
                 </PieChart>
               </ResponsiveContainer>
-              <div style={{padding:"0 16px 12px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:4}}>
-                {pieData.slice(0,4).map((d,i)=>(
-                  <div key={d.name} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:T.textS}}>
-                    <div style={{width:6,height:6,borderRadius:"50%",background:PIE_COLORS[i],flexShrink:0}}/>
-                    <span style={{fontFamily:T.mono}}>{d.name} {cu(d.value,0)}</span>
+              <div style={{padding:"0 18px 16px",display:"flex",flexDirection:"column",gap:6}}>
+                {allocation.map(a=>(
+                  <div key={a.name} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}>
+                    <span style={{display:"flex",alignItems:"center",gap:7,color:T.textS,fontFamily:T.mono}}>
+                      <div style={{width:7,height:7,borderRadius:"50%",background:a.color}}/>
+                      {a.name}
+                    </span>
+                    <span style={{fontFamily:T.mono,color:T.textM}}>{cu(a.value,0)} <span style={{color:T.textD}}>({allocTotal>0?(a.value/allocTotal*100).toFixed(0):0}%)</span></span>
                   </div>
                 ))}
               </div>
             </>
           }
         </Card>
+ 
+        <Card>
+          <CardHeader title="Cash Flow · Last 6 Months"/>
+          {nwTrend.every(m=>m.income===0&&m.cost===0)
+            ?<div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:12,fontFamily:T.mono}}>No data yet.</div>
+            :<div style={{padding:"12px 0 8px"}}>
+              <ResponsiveContainer width="100%" height={185}>
+                <BarChart data={nwTrend} barGap={3}>
+                  <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
+                  <Tooltip content={<CustomTooltip/>}/>
+                  <Bar dataKey="income" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
+                  <Bar dataKey="cost"   fill="#DC262618" stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Spend"/>
+                  <Bar dataKey="net"    fill="#1D4ED818" stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          }
+        </Card>
       </div>
-
-      {/* Accounts + Open Orders */}
+ 
+      {/* ── Accounts + Category snapshot ── */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,padding:"12px 16px 0"}}>
         <Card>
           <CardHeader title="Accounts"/>
-          <Pill label="MetaMask BTC"   value={cbt(w.metamask_btc)}   color={T.gold}/>
-          <Pill label="Coinbase BTC"   value={cbt(w.coinbase_btc)}   color={T.gold}/>
-          <Pill label="Coinbase USDT"  value={cu(w.coinbase_usdt)}   color={T.green}/>
-          <Pill label="MetaMask USDT"  value={cu(w.metamask_usdt)}   color={T.green}/>
-          <Pill label="UOB SGD"        value={csg(w.uob_sgd)}        color={T.blue}/>
-          <Pill label="Revolut SGD"    value={csg(w.revolut_sgd)}    color={T.blue}/>
-          <Pill label="BCA IDR"        value={cid(w.bca_idr)}        color={T.purple}/>
-          {bp&&<Pill label="Total (USD)" value={cu(nw)} color={T.text}/>}
+          <Pill label="MetaMask BTC"  value={cbt(w.metamask_btc)}  color={T.gold}/>
+          <Pill label="Coinbase BTC"  value={cbt(w.coinbase_btc)}  color={T.gold}/>
+          <Pill label="Coinbase USDT" value={cu(w.coinbase_usdt)}  color={T.green}/>
+          <Pill label="MetaMask USDT" value={cu(w.metamask_usdt)}  color={T.green}/>
+          <Pill label="UOB SGD"       value={csg(w.uob_sgd)}       color={T.blue}/>
+          <Pill label="Revolut SGD"   value={csg(w.revolut_sgd)}   color={T.blue}/>
+          <Pill label="BCA IDR"       value={cid(w.bca_idr)}       color={T.purple}/>
         </Card>
+ 
         <Card>
-          <CardHeader title="Open Orders"/>
-          {openOrders.length===0&&<div style={{padding:"24px 20px",color:T.textD,fontSize:13,fontFamily:T.mono}}>No open orders.</div>}
-          {openOrders.slice(0,4).map(o=>{
+          <CardHeader title="Top Spend Categories (MTD)"/>
+          {catSnapshot.length===0
+            ?<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No expenses logged this month.</div>
+            :<div style={{padding:"16px 20px"}}>
+              {catSnapshot.map((c,i)=>{
+                const pctVal=md.cost>0?c.value/md.cost:0;
+                return(
+                  <div key={c.name} style={{marginBottom:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:5,fontFamily:T.mono}}>
+                      <span style={{color:T.textS}}>{c.name}</span>
+                      <span style={{color:PIE_COLORS[i%PIE_COLORS.length],fontWeight:600}}>{cu(c.value)} <span style={{color:T.textD,fontWeight:400}}>({(pctVal*100).toFixed(0)}%)</span></span>
+                    </div>
+                    <div style={{height:4,background:"#F3F4F6",borderRadius:2}}>
+                      <div style={{height:4,background:PIE_COLORS[i%PIE_COLORS.length],borderRadius:2,width:Math.min(100,pctVal*100)+"%"}}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          }
+        </Card>
+      </div>
+ 
+      {/* ── Recent activity + Open orders ── */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,padding:"12px 16px 0"}}>
+        <Card>
+          <CardHeader title="Recent Activity"/>
+          {activity.length===0&&<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No activity yet.</div>}
+          {activity.map((a,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 18px",borderBottom:`1px solid #F9FAFB`}}>
+              <div style={{width:26,height:26,borderRadius:6,background:ACT_COLOR[a.type]+"12",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:ACT_COLOR[a.type],flexShrink:0}}>
+                {ACT_ICON[a.type]}
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,color:T.textS,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.label}</div>
+                <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:1}}>{a.date} · {a.sub}</div>
+              </div>
+              <div style={{fontSize:12,fontWeight:600,color:ACT_COLOR[a.type],fontFamily:T.mono,flexShrink:0}}>
+                {a.type==="income"?"+":a.type==="expense"?"-":""}{cu(Math.abs(a.amountUSD),0)}
+              </div>
+            </div>
+          ))}
+        </Card>
+ 
+        <Card>
+          <CardHeader title="Open Orders" action={<span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{cbt(monthOrderProfitBTC)} this month</span>}/>
+          {openOrders.length===0&&<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No open orders.</div>}
+          {openOrders.slice(0,5).map(o=>{
             const profitBTC=parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0);
             return(
-              <div key={o.id} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`}}>
+              <div key={o.id} style={{padding:"10px 18px",borderBottom:`1px solid #F9FAFB`}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                   <div>
-                    <div style={{fontSize:13,color:T.textS,fontWeight:500,marginBottom:2}}>{o.client}</div>
-                    <div style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{o.vendor} · {o.date}</div>
-                    {o.items&&<div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:2}}>{o.items}</div>}
+                    <div style={{fontSize:12,color:T.textS,fontWeight:500}}>{o.client}</div>
+                    <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:1}}>{o.vendor} · {o.date}{o.platform?` · ${o.platform}`:""}</div>
                   </div>
                   <div style={{textAlign:"right",flexShrink:0,marginLeft:8}}>
                     <div style={{fontSize:12,color:T.green,fontWeight:700,fontFamily:T.mono}}>{cbt(profitBTC)}</div>
@@ -342,7 +463,6 @@ function Dashboard({st,bp}){
     </div>
   );
 }
-
 // ── Ledger ────────────────────────────────────────────────────────────────────
 const CAT_COLORS = {
   "Dad":"#DC2626","Mom":"#EA580C","Sam":"#D97706","Glenn":"#65A30D",
@@ -1360,8 +1480,11 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast}){
             </div>
           ))}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 20px"}}>
-            <span style={{fontSize:12,color:T.textM,fontFamily:T.mono}}>BTC Cost Basis</span>
-            <input type="number" step="1" value={st.btcCostBasis||0} onChange={e=>onUpdate("btcCostBasis",parseFloat(e.target.value)||0)} style={{...inp,width:120}}/>
+            <div>
+              <span style={{fontSize:12,color:T.textM,fontFamily:T.mono}}>BTC Cost Basis</span>
+              <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:2}}>auto — weighted avg from BTC income</div>
+            </div>
+            <div style={{fontSize:14,fontWeight:700,color:T.gold,fontFamily:T.mono}}>{cu(st.btcCostBasis||0)}</div>
           </div>
         </div>
       </Card>
@@ -1851,7 +1974,7 @@ export default function App(){
       if(fx)setRates(fx);
       try{
         const ledgerData=await sb("ledger?order=created_at.desc");
-        if(ledgerData)setLedger(ledgerData.map(e=>({...e,amount:parseFloat(e.amount)})));
+        if(ledgerData)setLedger(ledgerData.map(e=>({...e,amount:parseFloat(e.amount),btcPriceAtTime:e.btc_price_at_time?parseFloat(e.btc_price_at_time):undefined})));
         const orderData=await sb("orders?order=created_at.desc");
         if(orderData&&orderData.length>0)setOrders(orderData.map(o=>({...o,costBTC:parseFloat(o.cost||0),saleBTC:parseFloat(o.sale_price||0),cost:parseFloat(o.cost||0),salePrice:parseFloat(o.sale_price||0),delivered:o.delivered===true||o.status==="delivered"})));
         const walletData=await sb("wallets?order=updated_at.desc&limit=1");
@@ -1888,14 +2011,18 @@ export default function App(){
   }
 
   async function applyTransactions(txs){
-    const newEntries=txs.map(t=>({...t,amount:Math.abs(parseFloat(t.amount))}));
+    const newEntries=txs.map(t=>({
+      ...t,
+      amount:Math.abs(parseFloat(t.amount)),
+      btcPriceAtTime: (t.currency==="BTC"&&t.type==="income") ? (btcPrice||null) : undefined,
+    }));
     const newW={...wallets};
     newEntries.forEach(e=>{const amt=Math.abs(parseFloat(e.amount));if(!e.account||!newW.hasOwnProperty(e.account))return;if(e.type==="income") newW[e.account]=(newW[e.account]||0)+amt;
     else if(e.type==="expense") newW[e.account]=Math.max(0,(newW[e.account]||0)-amt);
     else if(e.type==="transfer"&&e.label?.startsWith("Transfer →")) newW[e.account]=Math.max(0,(newW[e.account]||0)-amt);
     else if(e.type==="transfer"&&e.label?.startsWith("Transfer ←")) newW[e.account]=(newW[e.account]||0)+amt;});
     try{
-      for(const e of newEntries){const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date});const id=saved?.[0]?.id||crypto.randomUUID();setLedger(l=>[{...e,id},...l]);}
+      for(const e of newEntries){const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date,btc_price_at_time:e.btcPriceAtTime||null});const id=saved?.[0]?.id||crypto.randomUUID();setLedger(l=>[{...e,id,btcPriceAtTime:e.btcPriceAtTime},...l]);}
       await saveWallets(newW);showToast(`✓ ${newEntries.length} transaction(s) saved`);
     }catch(err){console.error("Transaction save error:",err);setLedger(l=>[...newEntries.map(e=>({...e,id:Date.now()+Math.random()})),...l]);setWallets(newW);showToast("Saved locally (Supabase error)");}
   }
@@ -2008,7 +2135,8 @@ export default function App(){
     setBtcLoading(false);
   }
 
-  const st={wallets,rates,btcCostBasis,ledger,orders};
+  const autoCostBasis = computeAvgCostBasis(ledger, btcCostBasis);
+  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders};
   const nw=netWorth(wallets,btcPrice,rates);
 
   if(dbLoading)return(
