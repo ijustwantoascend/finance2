@@ -14,6 +14,30 @@ const sb = async (path, method="GET", body=null) => {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const EXPENSE_CATS = ["Dad","Mom","Sam","Glenn","Personal","Dating","Gas","Gear","Miscellaneous","Family","Debt Repayment"];
+const CATEGORY_TAGS = {
+  "Gear":       ["PEDs / Steroids","Bloodwork","Equipment","Clothing"],
+  "Personal":   ["Supplements","Grooming","Self-care","Other"],
+  "Dating":     ["Dates","Gifts","Flowers","Other"],
+  "Family":     ["Groceries","Dining","Household","Other"],
+  "Gas":        ["Fuel","Transport / Rideshare","Other"],
+  "Dad":        ["Support","Gift","Other"],
+  "Mom":        ["Support","Gift","Other"],
+  "Sam":        ["Support","Gift","Other"],
+  "Glenn":      ["Support","Gift","Other"],
+  "Miscellaneous": ["Unclassified","One-off","Other"],
+  "Debt Repayment": ["Loan","Credit","Other"],
+};
+function tagsFor(category){ return CATEGORY_TAGS[category]||["Other"]; }
+function resolveTag(rawTag,category){
+  const valid=tagsFor(category);
+  if(!rawTag) return valid[valid.length-1]; // default to last option ("Other"-style)
+  const raw=String(rawTag).toLowerCase().trim();
+  const exact=valid.find(t=>t.toLowerCase()===raw);
+  if(exact) return exact;
+  const partial=valid.find(t=>t.toLowerCase().includes(raw)||raw.includes(t.toLowerCase()));
+  if(partial) return partial;
+  return valid[valid.length-1];
+}
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTH_KEYS   = ["01","02","03","04","05","06","07","08","09","10","11","12"];
 const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","AI Chat"];
@@ -100,6 +124,16 @@ CATEGORY MAPPING:
 - family, food, groceries, dinner, lunch, breakfast → Family
 - debt, loan, repayment, installment → Debt Repayment
 - anything else → Miscellaneous
+TAG (subcategory — pick ONE specific tag under the category, more precise than the category itself):
+- Gear → "PEDs / Steroids" (steroids/mast/test/tren/PEDs), "Bloodwork" (blood tests/labs), "Equipment", or "Clothing"
+- Personal → "Supplements" (protein/vitamins/creatine), "Grooming" (haircut), "Self-care", or "Other"
+- Dating → "Dates", "Gifts", "Flowers", or "Other"
+- Family → "Groceries", "Dining", "Household", or "Other"
+- Gas → "Fuel", "Transport / Rideshare", or "Other"
+- Dad/Mom/Sam/Glenn → "Support" (regular help), "Gift", or "Other"
+- Miscellaneous → "Unclassified", "One-off", or "Other"
+- Debt Repayment → "Loan", "Credit", or "Other"
+If genuinely unclear, use the category's "Other" tag. Never invent a tag outside the listed options for that category.
 CURRENCY RULES:
 - "$", "dollar", "usd" in EXPENSES = SGD → revolut_sgd
 - IDR, ribu, rb, juta = IDR → bca_idr
@@ -109,13 +143,17 @@ CURRENCY RULES:
 TRANSFER PAIRS: metamask→coinbase (BTC), coinbase→uob (USDT/BTC→SGD), uob→revolut (SGD), revolut→bca (SGD→IDR)
 CRITICAL: date=YYYY-MM-DD always. Today=${today}. Yesterday=${yesterday}. Never write "today". account never null. amount positive. type exactly "income" or "expense".
 Return ONLY valid JSON array, no markdown.
-[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]`;
+[{"type":"income|expense","category":"...","tag":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]`;
   const txt=await callClaude([{role:"user",content:text}],sys);
   const clean=txt.replace(/```json[\s\S]*?```|```/g,"").trim();
   const parsed=JSON.parse(clean);
-  return parsed.map(e=>({...e,type:e.type==="income"?"income":"expense",amount:Math.abs(parseFloat(e.amount)||0),currency:(e.type==="expense"&&e.currency==="USD")?"SGD":e.currency||"SGD",account:e.account||"revolut_sgd",
-    category:(()=>{if(!e.category)return"Miscellaneous";const raw=e.category.toLowerCase().trim();const steroidTerms=["steroid","mast","tren","testosterone","anavar","winstrol","deca","npp","bloodwork","blood test","labs","needles","pins","vials","ped"];if(steroidTerms.some(s=>raw.includes(s)))return"Gear";const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);if(exact)return exact;const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));if(partial)return partial;return"Miscellaneous";})(),
-    date:(e.date&&/^\d{4}-\d{2}-\d{2}$/.test(e.date))?e.date:today}));
+  return parsed.map(e=>{
+    const resolvedCategory=(()=>{if(!e.category)return"Miscellaneous";const raw=e.category.toLowerCase().trim();const steroidTerms=["steroid","mast","tren","testosterone","anavar","winstrol","deca","npp","bloodwork","blood test","labs","needles","pins","vials","ped"];if(steroidTerms.some(s=>raw.includes(s)))return"Gear";const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);if(exact)return exact;const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));if(partial)return partial;return"Miscellaneous";})();
+    return{...e,type:e.type==="income"?"income":"expense",amount:Math.abs(parseFloat(e.amount)||0),currency:(e.type==="expense"&&e.currency==="USD")?"SGD":e.currency||"SGD",account:e.account||"revolut_sgd",
+      category:resolvedCategory,
+      tag:resolveTag(e.tag,resolvedCategory),
+      date:(e.date&&/^\d{4}-\d{2}-\d{2}$/.test(e.date))?e.date:today};
+  });
 }
 async function aiChat(userMsg,state,bp,chatHistory){
   const nw=netWorth(state.wallets,bp,state.rates);
@@ -129,6 +167,7 @@ FINANCIAL FLOW: INCOME=crypto(BTC→metamask_btc/coinbase_btc, USDT→coinbase_u
 ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
 EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
 CATEGORY: steroids/PEDs/bloodwork=Gear. supplements/vitamins/protein=Personal. Never invent categories.
+TAG (subcategory, one level more specific than category): Gear→PEDs/Steroids|Bloodwork|Equipment|Clothing. Personal→Supplements|Grooming|Self-care|Other. Dating→Dates|Gifts|Flowers|Other. Family→Groceries|Dining|Household|Other. Gas→Fuel|Transport / Rideshare|Other. Dad/Mom/Sam/Glenn→Support|Gift|Other. Miscellaneous→Unclassified|One-off|Other. If unsure use that category's "Other".
 LIVE STATE:
 - BTC: ${bp?cu(bp):"unknown"} | Basis: ${cu(state.btcCostBasis)} | PnL: ${cu(btcPnL)}
 - Total BTC: ${cbt(btcTotal)} = ${bp?cu(btcTotal*bp):"?"}
@@ -140,7 +179,7 @@ LIVE STATE:
 - FX: 1 USD = ${state.rates.USDSGD?.toFixed(4)} SGD = ${Math.round(state.rates.USDIDR||16200).toLocaleString()} IDR (live)
 - Recent: ${recentTx}
 If user describes income/expenses/transfers output at end:
-<TRANSACTIONS>[{"type":"income|expense","category":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]</TRANSACTIONS>
+<TRANSACTIONS>[{"type":"income|expense","category":"...","tag":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]</TRANSACTIONS>
 CRITICAL: date=YYYY-MM-DD never "today". Today=${new Date().toISOString().slice(0,10)}. account never null. "$" in expenses=SGD→revolut_sgd.
 TRANSFER RULES: If user mentions transfer/move/send between accounts, output TWO entries both with type:"transfer" and category:"Transfer". First entry label "Transfer → [destination]", second label "Transfer ← [source]". Never use type expense or income for transfers.
 Be concise, data-driven, give real advice.`;
@@ -520,45 +559,61 @@ const CAT_COLORS = {
 };
 function catColor(cat){ return CAT_COLORS[cat]||T.textM; }
  
-function Ledger({st,bp,onDelete,onEdit}){
+function Ledger({st,bp,onDelete,onEdit,onBulkRecategorize}){
   const[typeF,setTypeF]=useState("all");
   const[catF,setCatF]=useState("all");
+  const[tagF,setTagF]=useState("all");
   const[monthF,setMonthF]=useState("all");
   const[search,setSearch]=useState("");
-  const[expandedCat,setExpandedCat]=useState(null);
   const[editingId,setEditingId]=useState(null);
   const[editDraft,setEditDraft]=useState({});
+  const[selectMode,setSelectMode]=useState(false);
+  const[selected,setSelected]=useState(new Set());
+  const[bulkCat,setBulkCat]=useState("");
+  const[bulkTag,setBulkTag]=useState("");
   const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
   const editInp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"5px 8px",fontSize:12,fontFamily:T.mono,outline:"none"};
 
   function startEdit(e){
     setEditingId(e.id);
-    setEditDraft({amount:e.amount,currency:e.currency,category:e.category||"",account:e.account||"",date:e.date,label:e.label||""});
+    setEditDraft({amount:e.amount,currency:e.currency,category:e.category||"",tag:e.tag||"",account:e.account||"",date:e.date,label:e.label||""});
   }
   function saveEdit(original){
     onEdit(original,{...editDraft,amount:Math.abs(parseFloat(editDraft.amount)||0)});
     setEditingId(null);
   }
+  function toggleSelected(id){
+    setSelected(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
+  }
+  function applyBulk(){
+    if(!bulkCat||selected.size===0)return;
+    onBulkRecategorize(Array.from(selected),bulkCat,bulkTag||tagsFor(bulkCat)[tagsFor(bulkCat).length-1]);
+    setSelected(new Set());
+    setBulkCat("");setBulkTag("");
+    setSelectMode(false);
+  }
 
   const{ledger,rates}=st;
   const months=Array.from(new Set(ledger.map(e=>e.date?.slice(0,7)).filter(Boolean))).sort().reverse();
- 
+
   const filtered=ledger.filter(e=>{
     const tOk=typeF==="all"||e.type===typeF;
     const cOk=catF==="all"||e.category===catF;
+    const gOk=tagF==="all"||e.tag===tagF;
     const mOk=monthF==="all"||e.date?.startsWith(monthF);
     const sOk=!search.trim()||
       (e.label||"").toLowerCase().includes(search.toLowerCase())||
       (e.category||"").toLowerCase().includes(search.toLowerCase())||
+      (e.tag||"").toLowerCase().includes(search.toLowerCase())||
       (e.account||"").toLowerCase().includes(search.toLowerCase());
-    return tOk&&cOk&&mOk&&sOk;
+    return tOk&&cOk&&gOk&&mOk&&sOk;
   });
- 
+
   // Summary stats for filtered set
   const incTotal=filtered.filter(e=>e.type==="income").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
   const expTotal=filtered.filter(e=>e.type==="expense").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0);
   const trfCount=filtered.filter(e=>e.type==="transfer").length;
- 
+
   // Category summary (expenses only) for the current filter set
   const catSummary=EXPENSE_CATS.map(c=>({
     name:c,
@@ -566,9 +621,21 @@ function Ledger({st,bp,onDelete,onEdit}){
     count:filtered.filter(e=>e.category===c&&e.type==="expense").length,
   })).filter(c=>c.value>0).sort((a,b)=>b.value-a.value);
 
+  // Tag drill-down for the currently active category (or across all expenses if none selected)
+  const tagScope=catF!=="all"?ledger.filter(e=>e.category===catF&&e.type==="expense"):ledger.filter(e=>e.type==="expense"&&catSummary.some(c=>c.name===e.category));
+  const tagSummary=(()=>{
+    if(catF==="all")return[];
+    const byTag={};
+    tagScope.forEach(e=>{
+      const t=e.tag||"Other";
+      byTag[t]=(byTag[t]||0)+toUSD(e.amount,e.currency,rates,bp);
+    });
+    return Object.entries(byTag).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+  })();
+
   return(
     <div style={{padding:"20px 16px"}}>
- 
+
       {/* Summary bar */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:0,marginBottom:16,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
         <Metric label="Income" value={cu(incTotal)} color={T.green} sub={`${filtered.filter(e=>e.type==="income").length} entries`}/>
@@ -576,16 +643,22 @@ function Ledger({st,bp,onDelete,onEdit}){
         <Metric label="Net" value={cu(incTotal-expTotal)} color={incTotal-expTotal>=0?T.green:T.red}/>
         <Metric label="Transfers" value={trfCount} color={T.blue}/>
       </div>
- 
+
       {/* Category quick-filter chips */}
       {catSummary.length>0&&(
         <div style={{marginBottom:14}}>
-          <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:8}}>Spend by Category</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Spend by Category</div>
+            <button onClick={()=>{setSelectMode(v=>!v);setSelected(new Set());}}
+              style={{background:selectMode?T.text:"none",color:selectMode?"#fff":T.textD,border:selectMode?"none":`1px solid ${T.border}`,borderRadius:4,padding:"3px 10px",fontSize:10,fontFamily:T.mono,cursor:"pointer",letterSpacing:"0.06em"}}>
+              {selectMode?"Cancel Select":"Select to Recategorize"}
+            </button>
+          </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             {catSummary.map(c=>{
               const active=catF===c.name;
               return(
-                <button key={c.name} onClick={()=>setCatF(active?"all":c.name)}
+                <button key={c.name} onClick={()=>{setCatF(active?"all":c.name);setTagF("all");}}
                   style={{display:"flex",alignItems:"center",gap:7,background:active?catColor(c.name):T.white,border:`1px solid ${active?catColor(c.name):T.border}`,borderRadius:20,padding:"6px 12px 6px 8px",cursor:"pointer",transition:"all 0.15s"}}>
                   <div style={{width:8,height:8,borderRadius:"50%",background:active?"#fff":catColor(c.name),flexShrink:0}}/>
                   <span style={{fontSize:11,color:active?"#fff":T.textS,fontFamily:T.mono,fontWeight:500}}>{c.name}</span>
@@ -594,12 +667,46 @@ function Ledger({st,bp,onDelete,onEdit}){
               );
             })}
           </div>
+
+          {/* Tag drill-down — appears once a category is selected */}
+          {catF!=="all"&&tagSummary.length>0&&(
+            <div style={{marginTop:10,paddingLeft:4,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+              <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>↳ breakdown:</span>
+              {tagSummary.map(t=>{
+                const active=tagF===t.name;
+                return(
+                  <button key={t.name} onClick={()=>setTagF(active?"all":t.name)}
+                    style={{background:active?"#F3F4F6":"transparent",border:`1px solid ${active?T.borderS:"transparent"}`,borderRadius:14,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:T.mono,color:T.textM}}>
+                    {t.name} <span style={{color:T.textD}}>{cu(t.value,0)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
- 
+
+      {/* Bulk recategorize bar */}
+      {selectMode&&selected.size>0&&(
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:14,background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:8,padding:"10px 16px"}}>
+          <span style={{fontSize:12,color:T.blue,fontWeight:600,fontFamily:T.mono}}>{selected.size} selected</span>
+          <select value={bulkCat} onChange={e=>{setBulkCat(e.target.value);setBulkTag("");}} style={sel}>
+            <option value="">Set category…</option>
+            {EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}
+          </select>
+          {bulkCat&&(
+            <select value={bulkTag} onChange={e=>setBulkTag(e.target.value)} style={sel}>
+              <option value="">Set tag…</option>
+              {tagsFor(bulkCat).map(t=><option key={t}>{t}</option>)}
+            </select>
+          )}
+          <button onClick={applyBulk} disabled={!bulkCat} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"7px 16px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Apply to {selected.size}</button>
+        </div>
+      )}
+
       {/* Filters */}
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
-        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search description, category, account..."
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search description, category, tag, account..."
           style={{...sel,flex:1,minWidth:200,cursor:"text"}}/>
         <select value={typeF} onChange={e=>setTypeF(e.target.value)} style={sel}>
           <option value="all">All types</option>
@@ -607,7 +714,7 @@ function Ledger({st,bp,onDelete,onEdit}){
           <option value="expense">Expense</option>
           <option value="transfer">Transfer</option>
         </select>
-        <select value={catF} onChange={e=>setCatF(e.target.value)} style={sel}>
+        <select value={catF} onChange={e=>{setCatF(e.target.value);setTagF("all");}} style={sel}>
           <option value="all">All categories</option>
           {EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}
         </select>
@@ -615,15 +722,15 @@ function Ledger({st,bp,onDelete,onEdit}){
           <option value="all">All months</option>
           {months.map(m=><option key={m} value={m}>{MONTHS_SHORT[parseInt(m.split("-")[1])-1]} {m.split("-")[0]}</option>)}
         </select>
-        {(typeF!=="all"||catF!=="all"||monthF!=="all"||search)&&(
-          <button onClick={()=>{setTypeF("all");setCatF("all");setMonthF("all");setSearch("");}}
+        {(typeF!=="all"||catF!=="all"||tagF!=="all"||monthF!=="all"||search)&&(
+          <button onClick={()=>{setTypeF("all");setCatF("all");setTagF("all");setMonthF("all");setSearch("");}}
             style={{background:"none",border:"none",color:T.textD,fontSize:11,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline"}}>
             Clear filters
           </button>
         )}
         <span style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginLeft:"auto"}}>{filtered.length} entries</span>
       </div>
- 
+
       {/* Entries list */}
       {filtered.length===0?(
         <Card style={{padding:"48px 24px",textAlign:"center"}}>
@@ -638,20 +745,26 @@ function Ledger({st,bp,onDelete,onEdit}){
             const color=e.type==="income"?T.green:e.type==="transfer"?T.blue:T.red;
             const catDot=e.category?catColor(e.category):T.textD;
             const isEditing=editingId===e.id;
+            const isChecked=selected.has(e.id);
 
             if(isEditing){
               return(
                 <div key={e.id} style={{padding:"14px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",background:"#FAFBFC"}}>
-                  <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                  <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
                     <input value={editDraft.label} onChange={ev=>setEditDraft(d=>({...d,label:ev.target.value}))} placeholder="Description" style={editInp}/>
                     <input type="number" step="any" value={editDraft.amount} onChange={ev=>setEditDraft(d=>({...d,amount:ev.target.value}))} style={editInp}/>
                     <select value={editDraft.currency} onChange={ev=>setEditDraft(d=>({...d,currency:ev.target.value}))} style={editInp}>
                       {["BTC","USDT","SGD","IDR","USD"].map(c=><option key={c}>{c}</option>)}
                     </select>
                     {e.type!=="transfer"?(
-                      <select value={editDraft.category} onChange={ev=>setEditDraft(d=>({...d,category:ev.target.value}))} style={editInp}>
+                      <select value={editDraft.category} onChange={ev=>setEditDraft(d=>({...d,category:ev.target.value,tag:tagsFor(ev.target.value)[tagsFor(ev.target.value).length-1]}))} style={editInp}>
                         <option value="">—</option>
                         {EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}
+                      </select>
+                    ):<div/>}
+                    {e.type!=="transfer"&&editDraft.category?(
+                      <select value={editDraft.tag} onChange={ev=>setEditDraft(d=>({...d,tag:ev.target.value}))} style={editInp}>
+                        {tagsFor(editDraft.category).map(t=><option key={t}>{t}</option>)}
                       </select>
                     ):<div/>}
                     <input type="date" value={editDraft.date} onChange={ev=>setEditDraft(d=>({...d,date:ev.target.value}))} style={editInp}/>
@@ -665,7 +778,11 @@ function Ledger({st,bp,onDelete,onEdit}){
             }
 
             return(
-              <div key={e.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",transition:"background 0.1s"}}>
+              <div key={e.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",transition:"background 0.1s",background:isChecked?"#EFF6FF":"transparent"}}>
+                {selectMode&&(
+                  <input type="checkbox" checked={isChecked} onChange={()=>toggleSelected(e.id)} style={{width:15,height:15,cursor:"pointer",accentColor:T.blue,flexShrink:0}}/>
+                )}
+
                 {/* Type icon */}
                 <div style={{width:34,height:34,borderRadius:8,background:color+"12",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:14,color}}>
                   {e.type==="income"?"↓":e.type==="transfer"?"⇄":"↑"}
@@ -685,6 +802,9 @@ function Ledger({st,bp,onDelete,onEdit}){
                         <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{e.category}</span>
                       </span>
                     )}
+                    {e.tag&&(
+                      <span style={{fontSize:9,color:catDot,background:catDot+"12",border:`1px solid ${catDot}25`,borderRadius:8,padding:"1px 6px",fontFamily:T.mono}}>{e.tag}</span>
+                    )}
                     {e.account&&(
                       <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>· {e.account}</span>
                     )}
@@ -702,8 +822,10 @@ function Ledger({st,bp,onDelete,onEdit}){
                 </div>
 
                 {/* Edit + Delete */}
-                <button onClick={()=>startEdit(e)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:13,flexShrink:0,padding:"0 2px"}}>✎</button>
-                <button onClick={()=>onDelete(e.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16,flexShrink:0,padding:"0 2px",lineHeight:1}}>×</button>
+                {!selectMode&&<>
+                  <button onClick={()=>startEdit(e)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:13,flexShrink:0,padding:"0 2px"}}>✎</button>
+                  <button onClick={()=>onDelete(e.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16,flexShrink:0,padding:"0 2px",lineHeight:1}}>×</button>
+                </>}
               </div>
             );
           })}
@@ -1250,6 +1372,7 @@ function Analytics({st,bp}){
   const{ledger,rates,orders}=st;
   const today=new Date();
   const[monthOffset,setMonthOffset]=useState(0);
+  const[expandedCat,setExpandedCat]=useState(null);
  
   const targetDate=new Date(today.getFullYear(),today.getMonth()+monthOffset,1);
   const year=targetDate.getFullYear();
@@ -1333,6 +1456,16 @@ function Analytics({st,bp}){
  
   const COLORS=[T.red,"#EA580C",T.gold,T.green,T.blue,T.purple,"#EC4899","#14B8A6"];
   const topCats=EXPENSE_CATS.map(c=>({name:c,total:weeks.reduce((s,w)=>s+(w.cats[c]||0),0),byWeek:weeks.map(w=>w.cats[c]||0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
+
+  function tagBreakdownFor(category){
+    const entries=ledger.filter(e=>e.date?.startsWith(monthStr)&&e.type==="expense"&&e.category===category);
+    const byTag={};
+    entries.forEach(e=>{
+      const t=e.tag||"Other";
+      byTag[t]=(byTag[t]||0)+toUSD(e.amount,e.currency,rates,bp);
+    });
+    return Object.entries(byTag).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+  }
  
   // ═══════════════════════════════════════════════════════════════════════
   // FAIR INSIGHTS
@@ -1507,21 +1640,38 @@ function Analytics({st,bp}){
         </Card>
  
         <Card>
-          <CardHeader title="Spend by Category"/>
+          <CardHeader title="Spend by Category" action={<span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>click to drill down</span>}/>
           {topCats.length===0
             ?<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No expenses this month.</div>
             :<div style={{padding:"16px 20px"}}>
               {topCats.map((c,i)=>{
                 const pctVal=monthTotal>0?c.total/monthTotal:0;
+                const isOpen=expandedCat===c.name;
+                const tagData=isOpen?tagBreakdownFor(c.name):[];
                 return(
                   <div key={c.name} style={{marginBottom:10}}>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4,fontFamily:T.mono}}>
-                      <span style={{color:T.textS}}>{c.name}</span>
-                      <span style={{color:COLORS[i%COLORS.length],fontWeight:600}}>{cu(c.total)} <span style={{color:T.textD,fontWeight:400}}>({(pctVal*100).toFixed(0)}%)</span></span>
+                    <div onClick={()=>setExpandedCat(isOpen?null:c.name)} style={{cursor:"pointer"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4,fontFamily:T.mono}}>
+                        <span style={{color:T.textS,display:"flex",alignItems:"center",gap:5}}>
+                          <span style={{fontSize:9,color:T.textD,transition:"transform 0.15s",display:"inline-block",transform:isOpen?"rotate(90deg)":"none"}}>▸</span>
+                          {c.name}
+                        </span>
+                        <span style={{color:COLORS[i%COLORS.length],fontWeight:600}}>{cu(c.total)} <span style={{color:T.textD,fontWeight:400}}>({(pctVal*100).toFixed(0)}%)</span></span>
+                      </div>
+                      <div style={{height:3,background:"#F3F4F6",borderRadius:2}}>
+                        <div style={{height:3,background:COLORS[i%COLORS.length],borderRadius:2,width:Math.min(100,pctVal*100)+"%"}}/>
+                      </div>
                     </div>
-                    <div style={{height:3,background:"#F3F4F6",borderRadius:2}}>
-                      <div style={{height:3,background:COLORS[i%COLORS.length],borderRadius:2,width:Math.min(100,pctVal*100)+"%"}}/>
-                    </div>
+                    {isOpen&&tagData.length>0&&(
+                      <div style={{marginTop:8,marginLeft:16,paddingLeft:10,borderLeft:`2px solid ${T.border}`,display:"flex",flexDirection:"column",gap:5}}>
+                        {tagData.map(t=>(
+                          <div key={t.name} style={{display:"flex",justifyContent:"space-between",fontSize:11,fontFamily:T.mono}}>
+                            <span style={{color:T.textM}}>{t.name}</span>
+                            <span style={{color:T.textS,fontWeight:500}}>{cu(t.value)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1885,10 +2035,14 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
           const today=new Date().toISOString().slice(0,10);
           let txs=JSON.parse(txMatch[1].trim());
           const steroidTerms=["steroid","mast","tren","testosterone","anavar","winstrol","deca","npp","bloodwork","blood test","labs","needles","pins","vials","ped"];
-          txs=txs.map(t=>({...t,type:t.type==="income"?"income":t.type==="transfer"?"transfer":"expense",
-          amount:Math.abs(parseFloat(t.amount)||0),currency:(t.type==="expense"&&t.currency==="USD")?"SGD":t.currency||"SGD",account:t.account||"revolut_sgd",
-          category:t.type==="transfer"?"Transfer":(()=>{if(!t.category)return"Miscellaneous";const raw=t.category.toLowerCase().trim();if(steroidTerms.some(s=>raw.includes(s)))return"Gear";const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);if(exact)return exact;const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));if(partial)return partial;return"Miscellaneous";})(),
-            date:(t.date&&/^\d{4}-\d{2}-\d{2}$/.test(t.date))?t.date:today}));
+          txs=txs.map(t=>{
+            const resolvedCategory=t.type==="transfer"?"Transfer":(()=>{if(!t.category)return"Miscellaneous";const raw=t.category.toLowerCase().trim();if(steroidTerms.some(s=>raw.includes(s)))return"Gear";const exact=EXPENSE_CATS.find(c=>c.toLowerCase()===raw);if(exact)return exact;const partial=EXPENSE_CATS.find(c=>raw.includes(c.toLowerCase())||c.toLowerCase().includes(raw));if(partial)return partial;return"Miscellaneous";})();
+            return{...t,type:t.type==="income"?"income":t.type==="transfer"?"transfer":"expense",
+              amount:Math.abs(parseFloat(t.amount)||0),currency:(t.type==="expense"&&t.currency==="USD")?"SGD":t.currency||"SGD",account:t.account||"revolut_sgd",
+              category:resolvedCategory,
+              tag:resolvedCategory==="Transfer"?null:resolveTag(t.tag,resolvedCategory),
+              date:(t.date&&/^\d{4}-\d{2}-\d{2}$/.test(t.date))?t.date:today};
+          });
           setPendingTx(txs);cleanReply+="\n\n*Transactions parsed — confirm to save.*";
         }catch{}
       }
@@ -2399,7 +2553,7 @@ export default function App(){
     else if(e.type==="transfer"&&e.label?.startsWith("Transfer →")) newW[e.account]=Math.max(0,(newW[e.account]||0)-amt);
     else if(e.type==="transfer"&&e.label?.startsWith("Transfer ←")) newW[e.account]=(newW[e.account]||0)+amt;});
     try{
-      for(const e of newEntries){const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date,btc_price_at_time:e.btcPriceAtTime||null});const id=saved?.[0]?.id||crypto.randomUUID();setLedger(l=>[{...e,id,btcPriceAtTime:e.btcPriceAtTime},...l]);}
+      for(const e of newEntries){const saved=await sb("ledger","POST",{type:e.type,category:e.category,tag:e.tag||null,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date,btc_price_at_time:e.btcPriceAtTime||null});const id=saved?.[0]?.id||crypto.randomUUID();setLedger(l=>[{...e,id,btcPriceAtTime:e.btcPriceAtTime},...l]);}
       await saveWallets(newW);showToast(`✓ ${newEntries.length} transaction(s) saved`);
     }catch(err){console.error("Transaction save error:",err);setLedger(l=>[...newEntries.map(e=>({...e,id:Date.now()+Math.random()})),...l]);setWallets(newW);showToast("Saved locally (Supabase error)");}
   }
@@ -2430,6 +2584,19 @@ export default function App(){
       return amt;
     }
     return amt;
+  }
+
+  async function bulkRecategorize(ids,category,tag){
+    setLedger(l=>l.map(e=>ids.includes(e.id)?{...e,category,tag}:e));
+    try{
+      for(const id of ids){
+        await sb(`ledger?id=eq.${id}`,"PATCH",{category,tag:tag||null});
+      }
+      showToast(`✓ Recategorized ${ids.length} entr${ids.length>1?"ies":"y"}`);
+    }catch(err){
+      console.error("Bulk recategorize error:",err);
+      showToast("⚠ Some entries failed to save — check console");
+    }
   }
 
   async function editEntry(original,updated){
@@ -2469,6 +2636,7 @@ export default function App(){
     try{
       await sb(`ledger?id=eq.${original.id}`,"PATCH",{
         category:updated.category,
+        tag:updated.tag||null,
         amount:newAmt,
         currency:updated.currency,
         account:newAccount,
@@ -2478,7 +2646,7 @@ export default function App(){
     }catch(err){ console.error("Edit save error:",err); }
 
     // 4. Update local state in place
-    setLedger(l=>l.map(e=>e.id===original.id?{...e,category:updated.category,amount:newAmt,currency:updated.currency,account:newAccount,label:updated.label,date:updated.date}:e));
+    setLedger(l=>l.map(e=>e.id===original.id?{...e,category:updated.category,tag:updated.tag,amount:newAmt,currency:updated.currency,account:newAccount,label:updated.label,date:updated.date}:e));
 
     showToast("✓ Entry updated");
   }
@@ -2667,7 +2835,7 @@ export default function App(){
 
       <div style={{maxWidth:1200,margin:"0 auto"}}>
         {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice}/>}
-        {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry}/>}
+        {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry} onBulkRecategorize={bulkRecategorize}/>}
         {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
