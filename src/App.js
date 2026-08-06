@@ -713,13 +713,62 @@ function Ledger({st,bp,onDelete,onEdit}){
   );
 }
 // ── Calendar ──────────────────────────────────────────────────────────────────
-function CalendarView({st,bp}){
+function CalendarView({st,bp,onSaveTarget}){
   const[year,setYear]=useState(2026);
-  const{ledger,rates}=st;
+  const[editingTarget,setEditingTarget]=useState(false);
+  const{ledger,rates,wallets:w}=st;
   const thisM=new Date().toISOString().slice(0,7);
+  const today=new Date();
+  const isCurrentYear=year===today.getFullYear();
+
+  const netWorthTarget=st.netWorthTarget||100000;
+  const[targetDraft,setTargetDraft]=useState(netWorthTarget);
+
+  const nw=netWorth(w,bp,rates); // live current net worth, independent of browsed year
+
+  // Pace + trajectory always computed against the REAL current year, regardless of which year is browsed
+  const realYear=today.getFullYear();
+  const monthsElapsed=today.getMonth()+1;
+  const monthsRemaining=12-monthsElapsed;
+  const curYearMonths=MONTH_KEYS.map(mk=>buildMonth(`${realYear}-${mk}`,ledger,bp,rates));
+  const ytdNet=curYearMonths.slice(0,monthsElapsed).reduce((s,m)=>s+m.net,0);
+  const avgMonthlyNet=monthsElapsed>0?ytdNet/monthsElapsed:0;
+  const startOfYearNW=nw-ytdNet; // approx Jan 1 net worth, backing out this year's net income flow
+  const gapUSD=netWorthTarget-nw;
+  const targetReached=nw>=netWorthTarget;
+  const requiredMonthlyNet=monthsRemaining>0?gapUSD/monthsRemaining:0;
+  const projectedYearEndNW=nw+avgMonthlyNet*monthsRemaining;
+  const onTrack=targetReached||projectedYearEndNW>=netWorthTarget;
+  const overallProgressPct=netWorthTarget>0?Math.min(1,nw/netWorthTarget):0;
+
+  // Cumulative net worth trajectory vs the linear glide path needed to hit target by Dec 31
+  const trajectoryData=curYearMonths.map((m,i)=>{
+    const cumNet=curYearMonths.slice(0,i+1).reduce((s,mm)=>s+mm.net,0);
+    const actualNW=startOfYearNW+cumNet;
+    const requiredNW=startOfYearNW+(netWorthTarget-startOfYearNW)*((i+1)/12);
+    return{month:MONTHS_SHORT[i],actual:i<monthsElapsed?Math.round(actualNW):null,required:Math.round(requiredNW),hasData:i<monthsElapsed};
+  });
+
+  function monthStatus(i){
+    if(i>=monthsElapsed) return null;
+    const actual=trajectoryData[i].actual;
+    const required=trajectoryData[i].required;
+    if(actual>=required) return {label:"ON TRACK",color:T.green,bg:"#F0FDF4"};
+    if(actual>=required*0.9) return {label:"CLOSE",color:T.gold,bg:"#FEF3C7"};
+    return {label:"BEHIND",color:T.red,bg:"#FEF2F2"};
+  }
+
+  function saveTarget(){
+    onSaveTarget(parseFloat(targetDraft)||0);
+    setEditingTarget(false);
+  }
+
   const yearData=MONTH_KEYS.map((mk,i)=>{const ym=`${year}-${mk}`;const md=buildMonth(ym,ledger,bp,rates);return{...md,month:MONTHS_SHORT[i],ym,hasData:md.inc>0||md.cost>0};});
   const totals=yearData.reduce((acc,m)=>({inc:acc.inc+m.inc,cost:acc.cost+m.cost}),{inc:0,cost:0});
+
   const th={textAlign:"right",padding:"9px 12px",color:T.textM,fontSize:10,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC",whiteSpace:"nowrap"};
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:14,fontWeight:700,fontFamily:T.mono,outline:"none",width:180};
+
   return(
     <div style={{padding:"20px 16px"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -730,35 +779,116 @@ function CalendarView({st,bp}){
           <button onClick={()=>setYear(y=>y+1)} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>›</button>
         </div>
       </div>
+
+      {/* Net Worth Target card */}
+      <Card style={{marginBottom:16}}>
+        <div style={{padding:"20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:16,marginBottom:16}}>
+            <div>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Net Worth Target · Dec 31, {realYear}</div>
+              {editingTarget?(
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input type="number" step="1000" value={targetDraft} onChange={e=>setTargetDraft(e.target.value)} style={inp}/>
+                  <button onClick={saveTarget} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"7px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Save</button>
+                </div>
+              ):(
+                <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+                  <div style={{fontSize:28,fontWeight:800,color:T.text,fontFamily:T.sans}}>{cu(netWorthTarget)}</div>
+                  <button onClick={()=>{setTargetDraft(netWorthTarget);setEditingTarget(true);}} style={{background:"none",border:"none",color:T.textD,fontSize:11,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline"}}>edit</button>
+                </div>
+              )}
+              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:4}}>Current: {cu(nw)} {targetReached?"· target reached ✓":`· ${cu(Math.abs(gapUSD))} ${gapUSD>=0?"to go":"over"}`}</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Projected Year-End</div>
+              <div style={{fontSize:24,fontWeight:800,color:onTrack?T.green:T.red,fontFamily:T.sans}}>{cu(projectedYearEndNW)}</div>
+              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:4}}>at {cu(avgMonthlyNet)}/mo current pace</div>
+            </div>
+          </div>
+
+          <div style={{height:8,background:"#F3F4F6",borderRadius:4,overflow:"hidden",marginBottom:8}}>
+            <div style={{height:8,background:targetReached?T.green:onTrack?T.gold:T.red,borderRadius:4,width:Math.min(100,overallProgressPct*100)+"%",transition:"width 0.3s"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,fontFamily:T.mono,marginBottom:16}}>
+            <span style={{color:T.textM}}>{cu(nw)} of {cu(netWorthTarget)} target</span>
+            <span style={{color:targetReached?T.green:onTrack?T.gold:T.red,fontWeight:600}}>{(overallProgressPct*100).toFixed(0)}%</span>
+          </div>
+
+          {!targetReached&&(
+            <div style={{background:onTrack?"#F0FDF4":"#FEF2F2",border:`1px solid ${onTrack?"#BBF7D0":"#FECACA"}`,borderRadius:8,padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:onTrack?T.green:T.red,fontFamily:T.sans}}>
+                  {onTrack?"On track to hit your target":"Behind pace — need to pick it up"}
+                </div>
+                <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginTop:3}}>
+                  {monthsRemaining>0
+                    ? `Need ${cu(requiredMonthlyNet)}/mo net for the remaining ${monthsRemaining} month${monthsRemaining>1?"s":""} to close the gap`
+                    : "Final month of the year"}
+                </div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>vs current pace</div>
+                <div style={{fontSize:14,fontWeight:700,color:T.text,fontFamily:T.mono}}>{cu(avgMonthlyNet)}/mo</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Net worth trajectory chart */}
+      <Card style={{marginBottom:16}}>
+        <CardHeader title="Net Worth Trajectory vs Required Pace"/>
+        <div style={{padding:"12px 0 8px"}}>
+          <ResponsiveContainer width="100%" height={190}>
+            <BarChart data={trajectoryData} barGap={3}>
+              <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
+              <Tooltip content={<CustomTooltip/>}/>
+              <Bar dataKey="actual" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Actual Net Worth"/>
+              <Bar dataKey="required" fill="#9CA3AF10" stroke={T.textD} strokeWidth={1} strokeDasharray="3 3" radius={[3,3,0,0]} name="Required Pace"/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
       <Card style={{marginBottom:16,overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:600}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:750}}>
           <thead><tr>
             <th style={{...th,textAlign:"left",padding:"9px 16px"}}>Month</th>
-            {["Earnings","Costs","Net","Margin","SGD Net","IDR Net"].map(h=><th key={h} style={th}>{h}</th>)}
+            {isCurrentYear&&<th style={{...th,textAlign:"center"}}>Status</th>}
+            {["Earnings","Costs","Net","Margin"].map(h=><th key={h} style={th}>{h}</th>)}
+            {isCurrentYear&&<th style={th}>Cum. Net Worth</th>}
           </tr></thead>
           <tbody>
-            {yearData.map(m=>{
+            {yearData.map((m,i)=>{
               const isCur=m.ym===thisM;
+              const status=isCurrentYear?monthStatus(i):null;
               return(
                 <tr key={m.ym} style={{borderBottom:`1px solid #F9FAFB`,background:isCur?"#F0F9FF":"transparent",opacity:m.hasData?1:0.25}}>
                   <td style={{padding:"10px 16px",color:isCur?T.blue:T.textS,fontWeight:isCur?700:400,borderLeft:isCur?`3px solid ${T.blue}`:"none"}}>{m.month}{isCur?" ●":""}</td>
+                  {isCurrentYear&&(
+                    <td style={{padding:"10px 12px",textAlign:"center"}}>
+                      {status&&<span style={{background:status.bg,color:status.color,fontSize:9,fontWeight:700,letterSpacing:"0.06em",padding:"2px 7px",borderRadius:10,fontFamily:T.mono}}>{status.label}</span>}
+                    </td>
+                  )}
                   <td style={{padding:"10px 12px",color:T.green,textAlign:"right",fontWeight:600}}>{m.hasData?cu(m.inc):"—"}</td>
                   <td style={{padding:"10px 12px",color:T.red,textAlign:"right"}}>{m.cost>0?cu(m.cost):"—"}</td>
                   <td style={{padding:"10px 12px",color:m.net>=0?T.green:T.red,textAlign:"right",fontWeight:600}}>{m.hasData?cu(m.net):"—"}</td>
                   <td style={{padding:"10px 12px",color:m.margin>0.5?T.green:T.textM,textAlign:"right"}}>{m.hasData?cp(m.margin):"—"}</td>
-                  <td style={{padding:"10px 12px",color:T.textM,textAlign:"right"}}>{m.hasData?csg(m.net*rates.USDSGD):"—"}</td>
-                  <td style={{padding:"10px 12px",color:T.gold,textAlign:"right",fontSize:11}}>{m.hasData?cid(m.net*(rates.USDIDR||16200)):"—"}</td>
+                  {isCurrentYear&&(
+                    <td style={{padding:"10px 12px",color:T.textM,textAlign:"right"}}>{i<monthsElapsed?cu(trajectoryData[i].actual):"—"}</td>
+                  )}
                 </tr>
               );
             })}
             <tr style={{borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
               <td style={{padding:"11px 16px",fontWeight:700,color:T.text}}>TOTAL {year}</td>
+              {isCurrentYear&&<td/>}
               <td style={{padding:"11px 12px",color:T.green,textAlign:"right",fontWeight:700}}>{cu(totals.inc)}</td>
               <td style={{padding:"11px 12px",color:T.red,textAlign:"right",fontWeight:700}}>{cu(totals.cost)}</td>
               <td style={{padding:"11px 12px",color:totals.inc-totals.cost>=0?T.green:T.red,textAlign:"right",fontWeight:700}}>{cu(totals.inc-totals.cost)}</td>
               <td style={{padding:"11px 12px",color:T.green,textAlign:"right",fontWeight:700}}>{cp(totals.inc>0?(totals.inc-totals.cost)/totals.inc:0)}</td>
-              <td style={{padding:"11px 12px",color:T.textM,textAlign:"right"}}>{csg((totals.inc-totals.cost)*rates.USDSGD)}</td>
-              <td style={{padding:"11px 12px",color:T.gold,textAlign:"right",fontSize:11}}>{cid((totals.inc-totals.cost)*(rates.USDIDR||16200))}</td>
+              {isCurrentYear&&<td style={{padding:"11px 12px",color:T.text,textAlign:"right",fontWeight:700}}>{cu(nw)}</td>}
             </tr>
           </tbody>
         </table>
@@ -2180,6 +2310,7 @@ export default function App(){
   const[syncError,setSyncError]=useState(false);
   const[walletRowId,setWalletRowId]=useState(null);
   const[lastReconciled,setLastReconciled]=useState(null);
+  const[netWorthTarget,setNetWorthTarget]=useState(100000);
   const showToast=msg=>setToast(msg);
 
   function tryUnlock(){
@@ -2228,6 +2359,7 @@ export default function App(){
           if(s.key==="btc_cost_basis") setBtcCostBasis(parseFloat(s.value)||0);
           if(s.key==="budgets"){ try{ setBudgets(JSON.parse(s.value)||{}); }catch{} }
           if(s.key==="last_reconciled") setLastReconciled(s.value);
+          if(s.key==="net_worth_target") setNetWorthTarget(parseFloat(s.value)||100000);
         });
         setSyncError(false);
       }catch(e){console.error("Supabase load error:",e);setSyncError(true);}
@@ -2272,17 +2404,82 @@ export default function App(){
     }catch(err){console.error("Transaction save error:",err);setLedger(l=>[...newEntries.map(e=>({...e,id:Date.now()+Math.random()})),...l]);setWallets(newW);showToast("Saved locally (Supabase error)");}
   }
 
+  function currencyToAccountNative(amt,fromCurrency,account){
+    if(account==="revolut_sgd"||account==="uob_sgd"){
+      if(fromCurrency==="USD"||fromCurrency==="USDT") return amt*rates.USDSGD;
+      if(fromCurrency==="IDR") return amt*(rates.USDSGD/(rates.USDIDR||16200));
+      if(fromCurrency==="BTC") return amt*(btcPrice||0)*rates.USDSGD;
+      return amt;
+    }
+    if(account==="bca_idr"){
+      if(fromCurrency==="USD"||fromCurrency==="USDT") return amt*(rates.USDIDR||16200);
+      if(fromCurrency==="SGD") return amt*(rates.USDIDR||16200)/rates.USDSGD;
+      if(fromCurrency==="BTC") return amt*(btcPrice||0)*(rates.USDIDR||16200);
+      return amt;
+    }
+    if(account==="coinbase_btc"||account==="metamask_btc"){
+      if(fromCurrency==="USD"||fromCurrency==="USDT") return amt/(btcPrice||1);
+      if(fromCurrency==="SGD") return amt/rates.USDSGD/(btcPrice||1);
+      if(fromCurrency==="IDR") return amt/(rates.USDIDR||16200)/(btcPrice||1);
+      return amt;
+    }
+    if(account==="coinbase_usdt"||account==="metamask_usdt"){
+      if(fromCurrency==="SGD") return amt/rates.USDSGD;
+      if(fromCurrency==="IDR") return amt/(rates.USDIDR||16200);
+      if(fromCurrency==="BTC") return amt*(btcPrice||0);
+      return amt;
+    }
+    return amt;
+  }
+
   async function editEntry(original,updated){
-    await deleteEntry(original.id);
-    await applyTransactions([{
-      type:original.type,
-      category:updated.category||original.category,
-      amount:updated.amount,
-      currency:updated.currency,
-      account:updated.account||original.account,
-      label:updated.label,
-      date:updated.date,
-    }]);
+    const newW={...wallets};
+
+    // 1. Reverse the original entry's effect on its account
+    if(original.account&&newW.hasOwnProperty(original.account)){
+      const origNative=currencyToAccountNative(Math.abs(parseFloat(original.amount)||0),original.currency,original.account);
+      if(original.type==="income"){
+        newW[original.account]=Math.max(0,(newW[original.account]||0)-origNative);
+      } else if(original.type==="expense"){
+        newW[original.account]=(newW[original.account]||0)+origNative;
+      } else if(original.type==="transfer"){
+        if(original.label?.startsWith("Transfer →")) newW[original.account]=(newW[original.account]||0)+origNative;
+        else if(original.label?.startsWith("Transfer ←")) newW[original.account]=Math.max(0,(newW[original.account]||0)-origNative);
+      }
+    }
+
+    // 2. Apply the updated entry's effect on its (possibly new) account
+    const newAccount=updated.account||original.account;
+    const newAmt=Math.abs(parseFloat(updated.amount)||0);
+    if(newAccount&&newW.hasOwnProperty(newAccount)){
+      const newNative=currencyToAccountNative(newAmt,updated.currency,newAccount);
+      if(original.type==="income"){
+        newW[newAccount]=(newW[newAccount]||0)+newNative;
+      } else if(original.type==="expense"){
+        newW[newAccount]=Math.max(0,(newW[newAccount]||0)-newNative);
+      } else if(original.type==="transfer"){
+        if(original.label?.startsWith("Transfer →")) newW[newAccount]=Math.max(0,(newW[newAccount]||0)-newNative);
+        else newW[newAccount]=(newW[newAccount]||0)+newNative;
+      }
+    }
+
+    await saveWallets(newW);
+
+    // 3. Update the existing Supabase row in place — no delete, no duplicate risk
+    try{
+      await sb(`ledger?id=eq.${original.id}`,"PATCH",{
+        category:updated.category,
+        amount:newAmt,
+        currency:updated.currency,
+        account:newAccount,
+        label:updated.label,
+        date:updated.date,
+      });
+    }catch(err){ console.error("Edit save error:",err); }
+
+    // 4. Update local state in place
+    setLedger(l=>l.map(e=>e.id===original.id?{...e,category:updated.category,amount:newAmt,currency:updated.currency,account:newAccount,label:updated.label,date:updated.date}:e));
+
     showToast("✓ Entry updated");
   }
 
@@ -2393,6 +2590,11 @@ export default function App(){
     await saveSetting("last_reconciled",now);
   }
 
+  async function handleSaveTarget(value){
+    setIncomeTarget(value);
+    await saveSetting("net_worth_target",value);
+  }
+
   async function handleBTCFetch(){
     setBtcLoading(true);
     const[price,fx]=await Promise.all([fetchBTCPrice(),fetchFXRates()]);
@@ -2402,7 +2604,7 @@ export default function App(){
   }
 
   const autoCostBasis = computeAvgCostBasis(ledger, btcCostBasis);
-  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,lastReconciled};
+  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,lastReconciled,netWorthTarget};
   const nw=netWorth(wallets,btcPrice,rates);
 
   if(dbLoading)return(
@@ -2466,7 +2668,7 @@ export default function App(){
       <div style={{maxWidth:1200,margin:"0 auto"}}>
         {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice}/>}
         {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry}/>}
-        {view==="Calendar" &&<CalendarView st={st} bp={btcPrice}/>}
+        {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
