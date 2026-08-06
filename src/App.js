@@ -220,7 +220,10 @@ function Toast({msg,onDone}){
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard({st,bp}){
   const{wallets:w,rates,ledger,orders,btcCostBasis}=st;
+  const[stressPct,setStressPct]=useState(0); // 0, -10, -30, -50
+  const stressBp=bp?bp*(1+stressPct/100):bp;
   const nw=netWorth(w,bp,rates);
+  const stressNw=netWorth(w,stressBp,rates);
   const btcTotal=totalBTC(w);
   const btcPnL=bp&&btcCostBasis?(bp-btcCostBasis)*btcTotal:0;
   const btcPnLPct=btcCostBasis?((bp||0)-btcCostBasis)/btcCostBasis*100:0;
@@ -291,7 +294,14 @@ function Dashboard({st,bp}){
       <div style={{padding:"32px 28px 24px",background:T.white,borderBottom:`1px solid ${T.border}`}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:24}}>
           <div style={{flex:1,minWidth:260}}>
-            <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",marginBottom:10,fontFamily:T.mono,fontWeight:500}}>Total Portfolio Value</div>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <span style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Total Portfolio Value</span>
+              {(()=>{const h=reconHealth(st.lastReconciled);return(
+                <span style={{display:"flex",alignItems:"center",gap:5,fontSize:9,color:h.color,fontFamily:T.mono,fontWeight:600,background:h.urgent?"#FEF2F2":"#F9FAFB",border:`1px solid ${h.urgent?"#FECACA":T.border}`,borderRadius:20,padding:"2px 8px"}}>
+                  <span style={{width:5,height:5,borderRadius:"50%",background:h.dot}}/>{h.label}
+                </span>
+              );})()}
+            </div>
             <div style={{display:"flex",alignItems:"baseline",gap:14,flexWrap:"wrap"}}>
               <div style={{fontSize:46,fontWeight:800,letterSpacing:"-0.03em",color:T.text,lineHeight:1,fontFamily:T.sans}}>{bp?cu(nw):"—"}</div>
               {bp&&btcPnL!==0&&(
@@ -329,7 +339,45 @@ function Dashboard({st,bp}){
         <Metric label="Runway" value={runwayDays!==null?`${runwayDays}d`:"—"} color={T.blue} sub="liquid ÷ daily spend"/>
         <Metric label="Open Orders" value={openOrders.length} color={T.purple} sub={`${cbt(orderProfitBTC)} total profit`}/>
       </div>
- 
+
+      {/* ── BTC Drawdown Stress Test ── */}
+      {bp&&(
+        <div style={{padding:"16px 16px 0"}}>
+          <Card>
+            <CardHeader title="BTC Drawdown Stress Test" action={
+              <div style={{display:"flex",gap:4,background:"#F3F4F6",borderRadius:6,padding:3}}>
+                {[0,-10,-30,-50].map(p=>(
+                  <button key={p} onClick={()=>setStressPct(p)}
+                    style={{background:stressPct===p?T.text:"transparent",color:stressPct===p?"#fff":T.textM,border:"none",borderRadius:4,padding:"5px 11px",fontSize:11,fontWeight:stressPct===p?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                    {p===0?"Now":`${p}%`}
+                  </button>
+                ))}
+              </div>
+            }/>
+            <div style={{padding:"18px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:16}}>
+              <div>
+                <div style={{fontSize:10,color:T.textD,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:5}}>
+                  {stressPct===0?"Current BTC Price":`BTC at ${stressPct}%`}
+                </div>
+                <div style={{fontSize:20,fontWeight:700,color:stressPct<0?T.red:T.text,fontFamily:T.sans}}>{cu(stressBp)}</div>
+              </div>
+              <div style={{fontSize:20,color:T.textD}}>→</div>
+              <div>
+                <div style={{fontSize:10,color:T.textD,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:5}}>Net Worth Under Scenario</div>
+                <div style={{fontSize:24,fontWeight:800,color:stressPct<0?T.red:T.text,fontFamily:T.sans}}>{cu(stressNw)}</div>
+              </div>
+              {stressPct!==0&&(
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:10,color:T.textD,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:5}}>Impact</div>
+                  <div style={{fontSize:16,fontWeight:700,color:T.red,fontFamily:T.mono}}>{cu(stressNw-nw)}</div>
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:2}}>{nw>0?(((stressNw-nw)/nw)*100).toFixed(1):"0"}% of portfolio</div>
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+
       {/* ── Portfolio allocation + Cash flow chart ── */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1.4fr",gap:16,padding:"16px 16px 0"}}>
         <Card>
@@ -472,14 +520,27 @@ const CAT_COLORS = {
 };
 function catColor(cat){ return CAT_COLORS[cat]||T.textM; }
  
-function Ledger({st,bp,onDelete}){
+function Ledger({st,bp,onDelete,onEdit}){
   const[typeF,setTypeF]=useState("all");
   const[catF,setCatF]=useState("all");
   const[monthF,setMonthF]=useState("all");
   const[search,setSearch]=useState("");
   const[expandedCat,setExpandedCat]=useState(null);
+  const[editingId,setEditingId]=useState(null);
+  const[editDraft,setEditDraft]=useState({});
+  const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
+  const editInp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"5px 8px",fontSize:12,fontFamily:T.mono,outline:"none"};
+
+  function startEdit(e){
+    setEditingId(e.id);
+    setEditDraft({amount:e.amount,currency:e.currency,category:e.category||"",account:e.account||"",date:e.date,label:e.label||""});
+  }
+  function saveEdit(original){
+    onEdit(original,{...editDraft,amount:Math.abs(parseFloat(editDraft.amount)||0)});
+    setEditingId(null);
+  }
+
   const{ledger,rates}=st;
- 
   const months=Array.from(new Set(ledger.map(e=>e.date?.slice(0,7)).filter(Boolean))).sort().reverse();
  
   const filtered=ledger.filter(e=>{
@@ -504,9 +565,7 @@ function Ledger({st,bp,onDelete}){
     value:filtered.filter(e=>e.category===c&&e.type==="expense").reduce((s,e)=>s+toUSD(e.amount,e.currency,rates,bp),0),
     count:filtered.filter(e=>e.category===c&&e.type==="expense").length,
   })).filter(c=>c.value>0).sort((a,b)=>b.value-a.value);
- 
-  const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
- 
+
   return(
     <div style={{padding:"20px 16px"}}>
  
@@ -578,13 +637,40 @@ function Ledger({st,bp,onDelete}){
             const idr=usd*(rates.USDIDR||16200);
             const color=e.type==="income"?T.green:e.type==="transfer"?T.blue:T.red;
             const catDot=e.category?catColor(e.category):T.textD;
+            const isEditing=editingId===e.id;
+
+            if(isEditing){
+              return(
+                <div key={e.id} style={{padding:"14px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",background:"#FAFBFC"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                    <input value={editDraft.label} onChange={ev=>setEditDraft(d=>({...d,label:ev.target.value}))} placeholder="Description" style={editInp}/>
+                    <input type="number" step="any" value={editDraft.amount} onChange={ev=>setEditDraft(d=>({...d,amount:ev.target.value}))} style={editInp}/>
+                    <select value={editDraft.currency} onChange={ev=>setEditDraft(d=>({...d,currency:ev.target.value}))} style={editInp}>
+                      {["BTC","USDT","SGD","IDR","USD"].map(c=><option key={c}>{c}</option>)}
+                    </select>
+                    {e.type!=="transfer"?(
+                      <select value={editDraft.category} onChange={ev=>setEditDraft(d=>({...d,category:ev.target.value}))} style={editInp}>
+                        <option value="">—</option>
+                        {EXPENSE_CATS.map(c=><option key={c}>{c}</option>)}
+                      </select>
+                    ):<div/>}
+                    <input type="date" value={editDraft.date} onChange={ev=>setEditDraft(d=>({...d,date:ev.target.value}))} style={editInp}/>
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>saveEdit(e)} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"6px 16px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Save</button>
+                    <button onClick={()=>setEditingId(null)} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:5,padding:"6px 14px",fontSize:11,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+                  </div>
+                </div>
+              );
+            }
+
             return(
               <div key={e.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 20px",borderBottom:i<filtered.length-1?`1px solid #F9FAFB`:"none",transition:"background 0.1s"}}>
                 {/* Type icon */}
                 <div style={{width:34,height:34,borderRadius:8,background:color+"12",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:14,color}}>
                   {e.type==="income"?"↓":e.type==="transfer"?"⇄":"↑"}
                 </div>
- 
+
                 {/* Description + meta */}
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,color:T.textS,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -604,7 +690,7 @@ function Ledger({st,bp,onDelete}){
                     )}
                   </div>
                 </div>
- 
+
                 {/* Amount */}
                 <div style={{textAlign:"right",flexShrink:0}}>
                   <div style={{fontSize:13,fontWeight:700,color,fontFamily:T.mono}}>
@@ -614,8 +700,9 @@ function Ledger({st,bp,onDelete}){
                     {cu(usd)}{e.type==="expense"&&` · ${cid(idr)}`}
                   </div>
                 </div>
- 
-                {/* Delete */}
+
+                {/* Edit + Delete */}
+                <button onClick={()=>startEdit(e)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:13,flexShrink:0,padding:"0 2px"}}>✎</button>
                 <button onClick={()=>onDelete(e.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16,flexShrink:0,padding:"0 2px",lineHeight:1}}>×</button>
               </div>
             );
@@ -1430,7 +1517,105 @@ function TransferForm({wallets,rates,bp,onTransfer,showToast}){
 }
 
 // ── Wallets ───────────────────────────────────────────────────────────────────
-function Wallets({st,bp,onUpdate,onTransfer,showToast}){
+// ── Reconciliation ────────────────────────────────────────────────────────────
+const RECON_ACCOUNTS = [
+  {key:"metamask_btc",  label:"MetaMask BTC",  step:"0.000001", fmt:cbt},
+  {key:"coinbase_btc",  label:"Coinbase BTC",  step:"0.000001", fmt:cbt},
+  {key:"coinbase_usdt", label:"Coinbase USDT", step:"0.01",     fmt:cu},
+  {key:"metamask_usdt", label:"MetaMask USDT", step:"0.01",     fmt:cu},
+  {key:"uob_sgd",       label:"UOB SGD",       step:"0.01",     fmt:csg},
+  {key:"revolut_sgd",   label:"Revolut SGD",   step:"0.01",     fmt:csg},
+  {key:"bca_idr",       label:"BCA IDR",       step:"1000",     fmt:cid},
+];
+
+function reconHealth(lastReconciled){
+  if(!lastReconciled) return {color:T.red, dot:"#EF4444", label:"Never reconciled", urgent:true};
+  const days=Math.floor((Date.now()-new Date(lastReconciled).getTime())/86400000);
+  if(days<=7)  return {color:T.green, dot:"#22C55E", label:`Reconciled ${days===0?"today":days+"d ago"}`, urgent:false};
+  if(days<=14) return {color:T.gold,  dot:"#F59E0B", label:`Reconciled ${days}d ago`, urgent:false};
+  return {color:T.red, dot:"#EF4444", label:`Reconciled ${days}d ago`, urgent:true};
+}
+
+function Reconciliation({wallets,onReconcile,lastReconciled,showToast}){
+  const[open,setOpen]=useState(false);
+  const[actuals,setActuals]=useState({});
+  const health=reconHealth(lastReconciled);
+
+  function startReconcile(){
+    const init={};
+    RECON_ACCOUNTS.forEach(a=>{init[a.key]=wallets[a.key]||0;});
+    setActuals(init);
+    setOpen(true);
+  }
+  function applyReconcile(){
+    const newW={...wallets};
+    RECON_ACCOUNTS.forEach(a=>{newW[a.key]=parseFloat(actuals[a.key])||0;});
+    onReconcile(newW);
+    setOpen(false);
+    showToast("✓ Balances reconciled");
+  }
+  const deltas=RECON_ACCOUNTS.map(a=>{
+    const appVal=wallets[a.key]||0;
+    const actualVal=parseFloat(actuals[a.key])||0;
+    return{...a, appVal, actualVal, delta:actualVal-appVal};
+  });
+  const mismatchCount=deltas.filter(d=>Math.abs(d.delta)>0.000001).length;
+
+  return(
+    <Card style={{marginTop:16}}>
+      <CardHeader title="Reconciliation" action={
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:health.color,fontFamily:T.mono,fontWeight:600}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:health.dot,display:"inline-block"}}/>
+            {health.label}
+          </span>
+          {!open&&<button onClick={startReconcile} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"5px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Reconcile Now</button>}
+        </div>
+      }/>
+      {!open?(
+        <div style={{padding:"16px 20px",fontSize:12,color:T.textM,fontFamily:T.mono,lineHeight:1.6}}>
+          Compare your app balances against what your wallets and bank apps actually show. Catches drift from parsing errors or sync failures before it compounds.
+        </div>
+      ):(
+        <div style={{padding:"16px 20px"}}>
+          <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginBottom:14}}>
+            Enter what each account actually shows right now — mismatches highlight in red.
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,padding:"0 0 8px",borderBottom:`1px solid ${T.border}`,marginBottom:8}}>
+            <span style={{fontSize:9,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono}}>Account</span>
+            <span style={{fontSize:9,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono,textAlign:"right"}}>App Shows</span>
+            <span style={{fontSize:9,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono,textAlign:"right"}}>Actual</span>
+          </div>
+          {deltas.map(a=>{
+            const hasDelta=Math.abs(a.delta)>0.000001;
+            return(
+              <div key={a.key} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,alignItems:"center",padding:"9px 0",borderBottom:`1px solid #F9FAFB`}}>
+                <div style={{fontSize:12,color:T.textS,fontFamily:T.mono}}>{a.label}</div>
+                <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,textAlign:"right"}}>{a.fmt(a.appVal)}</div>
+                <div>
+                  <input type="number" step={a.step} value={actuals[a.key]??""} onChange={e=>setActuals(x=>({...x,[a.key]:e.target.value}))}
+                    style={{background:hasDelta?"#FEF2F2":T.white,border:`1px solid ${hasDelta?"#FECACA":T.borderS}`,borderRadius:4,padding:"6px 10px",fontSize:12,width:"100%",textAlign:"right",fontFamily:T.mono,color:T.text,outline:"none"}}/>
+                  {hasDelta&&<div style={{fontSize:10,color:T.red,marginTop:3,textAlign:"right",fontFamily:T.mono}}>Δ {a.delta>0?"+":""}{a.fmt(a.delta)}</div>}
+                </div>
+              </div>
+            );
+          })}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16}}>
+            <span style={{fontSize:11,fontFamily:T.mono,color:mismatchCount>0?T.red:T.green,fontWeight:600}}>
+              {mismatchCount>0?`${mismatchCount} mismatch${mismatchCount>1?"es":""} found`:"All balances match"}
+            </span>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={applyReconcile} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"8px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Apply & Save</button>
+              <button onClick={()=>setOpen(false)} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:5,padding:"8px 16px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile}){
   const{wallets:w,rates,btcCostBasis}=st;
   const nw=netWorth(w,bp,rates);
   const btcTotal=totalBTC(w);
@@ -1515,6 +1700,32 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast}){
       <Card>
         <CardHeader title="Transfer Between Accounts"/>
         <TransferForm wallets={w} rates={rates} bp={bp} onTransfer={onTransfer} showToast={showToast}/>
+      </Card>
+      <Reconciliation wallets={w} onReconcile={onReconcile} lastReconciled={st.lastReconciled} showToast={showToast}/>
+      <Card style={{marginTop:16}}>
+        <CardHeader title="Backup & Export"/>
+        <div style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+          <div style={{fontSize:12,color:T.textM,fontFamily:T.mono,lineHeight:1.6,maxWidth:420}}>
+            Download a full snapshot of your ledger, orders, wallets, budgets and settings as JSON — a safety copy independent of Supabase.
+          </div>
+          <button onClick={()=>{
+            const payload={
+              exportedAt:new Date().toISOString(),
+              wallets:w, rates,
+              btcCostBasis:st.btcCostBasis,
+              ledger:st.ledger, orders:st.orders,
+              budgets:st.budgets||null,
+            };
+            const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+            const url=URL.createObjectURL(blob);
+            const a=document.createElement("a");
+            a.href=url; a.download=`hxn-backup-${new Date().toISOString().slice(0,10)}.json`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+            ↓ Export JSON
+          </button>
+        </div>
       </Card>
     </div>
   );
@@ -1638,7 +1849,16 @@ function Budget({st,bp,budgets,onSaveBudgets}){
   const budgetTotalIDR=budgets.totalIDR||totalIDR;
   const budgetTotalUSD=budgetTotalIDR/(rates.USDIDR||16200);
 
+  const[rolloverOn,setRolloverOn]=useState(true);
   const thisM=selectedMonth;
+  const isCurrentMonthSelected=thisM===new Date().toISOString().slice(0,7);
+  const daysInSelMonth=new Date(parseInt(thisM.split("-")[0]),parseInt(thisM.split("-")[1]),0).getDate();
+  const daysElapsedSel=isCurrentMonthSelected?new Date().getDate():daysInSelMonth;
+
+  const prevMDate=new Date(parseInt(thisM.split("-")[0]),parseInt(thisM.split("-")[1])-2,1);
+  const prevMStr=`${prevMDate.getFullYear()}-${String(prevMDate.getMonth()+1).padStart(2,"0")}`;
+  const prevMd=buildMonth(prevMStr,ledger,bp,rates);
+
   const md=buildMonth(thisM,ledger,bp,rates);
   const spentTotalUSD=md.cost;
   const spentTotalIDR=spentTotalUSD*(rates.USDIDR||16200);
@@ -1744,11 +1964,23 @@ function Budget({st,bp,budgets,onSaveBudgets}){
 
       {/* Category % breakdown */}
       <Card style={{marginBottom:16}}>
-        <CardHeader title={editing?"Set % Per Category (must total 100%)":"Category Budget Breakdown"}/>
+        <CardHeader title={editing?"Set % Per Category (must total 100%)":"Category Budget Breakdown"}
+          action={!editing&&(
+            <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+              <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,letterSpacing:"0.06em"}}>Rollover unused budget</span>
+              <div onClick={()=>setRolloverOn(v=>!v)} style={{width:32,height:18,borderRadius:9,background:rolloverOn?T.text:T.border,position:"relative",transition:"background 0.2s"}}>
+                <div style={{width:14,height:14,borderRadius:"50%",background:"#fff",position:"absolute",top:2,left:rolloverOn?16:2,transition:"left 0.2s",boxShadow:"0 1px 2px rgba(0,0,0,0.2)"}}/>
+              </div>
+            </label>
+          )}
+        />
         <div style={{padding:"8px 0"}}>
           {EXPENSE_CATS.map(cat=>{
             const catPct=parseFloat(pct[cat])||0;
-            const catBudgetIDR=budgetTotalIDR*(catPct/100);
+            const baseBudgetIDR=budgetTotalIDR*(catPct/100);
+            const prevSpentIDR=(prevMd.cats[cat]||0)*(rates.USDIDR||16200);
+            const rolloverIDR=rolloverOn?Math.max(0,baseBudgetIDR-prevSpentIDR):0;
+            const catBudgetIDR=baseBudgetIDR+rolloverIDR;
             const catBudgetUSD=catBudgetIDR/(rates.USDIDR||16200);
             const spentUSD=md.cats[cat]||0;
             const spentIDR=spentUSD*(rates.USDIDR||16200);
@@ -1756,13 +1988,19 @@ function Budget({st,bp,budgets,onSaveBudgets}){
             const catSpentPct=catBudgetIDR>0?spentIDR/catBudgetIDR:0;
             const isOver=catSpentPct>=1;
             const isClose=catSpentPct>=0.8&&catSpentPct<1;
+            // Burn-rate projection: only meaningful for the current month, in progress
+            const dailyAvgIDR=daysElapsedSel>0?spentIDR/daysElapsedSel:0;
+            const projectedEOMIDR=dailyAvgIDR*daysInSelMonth;
+            const willExceed=isCurrentMonthSelected&&catBudgetIDR>0&&!isOver&&projectedEOMIDR>catBudgetIDR&&dailyAvgIDR>0;
+            const overageDay=willExceed?Math.ceil(catBudgetIDR/dailyAvgIDR):null;
             return(
               <div key={cat} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:catPct>0?6:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:13,color:T.textS,fontWeight:500}}>{cat}</span>
                     {isOver&&<span style={{background:"#FEE2E2",color:T.red,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>OVER</span>}
-                    {isClose&&<span style={{background:"#FEF3C7",color:T.gold,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>CLOSE</span>}
+                    {isClose&&!isOver&&<span style={{background:"#FEF3C7",color:T.gold,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>CLOSE</span>}
+                    {rolloverIDR>0&&!editing&&<span style={{background:"#EFF6FF",color:T.blue,fontSize:9,fontWeight:700,letterSpacing:"0.06em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>+{cid(rolloverIDR)} rollover</span>}
                   </div>
                   {editing?(
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
@@ -1777,6 +2015,11 @@ function Budget({st,bp,budgets,onSaveBudgets}){
                     </div>
                   )}
                 </div>
+                {willExceed&&(
+                  <div style={{fontSize:10,color:T.gold,fontFamily:T.mono,marginBottom:5,display:"flex",alignItems:"center",gap:5}}>
+                    <span>⚠</span> At current pace, will exceed budget around day {overageDay} of {daysInSelMonth}
+                  </div>
+                )}
                 {catPct>0&&!editing&&(
                   <>
                     <div style={{height:4,background:"#F3F4F6",borderRadius:2,overflow:"hidden",marginBottom:4}}>
@@ -1936,6 +2179,7 @@ export default function App(){
   const[toast,setToast]=useState(null);
   const[syncError,setSyncError]=useState(false);
   const[walletRowId,setWalletRowId]=useState(null);
+  const[lastReconciled,setLastReconciled]=useState(null);
   const showToast=msg=>setToast(msg);
 
   function tryUnlock(){
@@ -1983,6 +2227,7 @@ export default function App(){
         if(settingsData)settingsData.forEach(s=>{
           if(s.key==="btc_cost_basis") setBtcCostBasis(parseFloat(s.value)||0);
           if(s.key==="budgets"){ try{ setBudgets(JSON.parse(s.value)||{}); }catch{} }
+          if(s.key==="last_reconciled") setLastReconciled(s.value);
         });
         setSyncError(false);
       }catch(e){console.error("Supabase load error:",e);setSyncError(true);}
@@ -2025,6 +2270,20 @@ export default function App(){
       for(const e of newEntries){const saved=await sb("ledger","POST",{type:e.type,category:e.category,amount:e.amount,currency:e.currency,account:e.account,label:e.label,date:e.date,btc_price_at_time:e.btcPriceAtTime||null});const id=saved?.[0]?.id||crypto.randomUUID();setLedger(l=>[{...e,id,btcPriceAtTime:e.btcPriceAtTime},...l]);}
       await saveWallets(newW);showToast(`✓ ${newEntries.length} transaction(s) saved`);
     }catch(err){console.error("Transaction save error:",err);setLedger(l=>[...newEntries.map(e=>({...e,id:Date.now()+Math.random()})),...l]);setWallets(newW);showToast("Saved locally (Supabase error)");}
+  }
+
+  async function editEntry(original,updated){
+    await deleteEntry(original.id);
+    await applyTransactions([{
+      type:original.type,
+      category:updated.category||original.category,
+      amount:updated.amount,
+      currency:updated.currency,
+      account:updated.account||original.account,
+      label:updated.label,
+      date:updated.date,
+    }]);
+    showToast("✓ Entry updated");
   }
 
   async function deleteEntry(id){
@@ -2127,6 +2386,13 @@ export default function App(){
     if(key==="btcCostBasis"){setBtcCostBasis(value);saveSetting("btc_cost_basis",value);}
   }
 
+  async function handleReconcile(newWallets){
+    await saveWallets(newWallets);
+    const now=new Date().toISOString();
+    setLastReconciled(now);
+    await saveSetting("last_reconciled",now);
+  }
+
   async function handleBTCFetch(){
     setBtcLoading(true);
     const[price,fx]=await Promise.all([fetchBTCPrice(),fetchFXRates()]);
@@ -2136,7 +2402,7 @@ export default function App(){
   }
 
   const autoCostBasis = computeAvgCostBasis(ledger, btcCostBasis);
-  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders};
+  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,lastReconciled};
   const nw=netWorth(wallets,btcPrice,rates);
 
   if(dbLoading)return(
@@ -2199,11 +2465,11 @@ export default function App(){
 
       <div style={{maxWidth:1200,margin:"0 auto"}}>
         {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice}/>}
-        {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry}/>}
+        {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry}/>}
         {view==="Calendar" &&<CalendarView st={st} bp={btcPrice}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
-        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast}/>}
+        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets}/>}
         {view==="AI Chat"  &&<AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>}
       </div>
