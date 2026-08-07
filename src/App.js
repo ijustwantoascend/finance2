@@ -13,12 +13,13 @@ const sb = async (path, method="GET", body=null) => {
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const EXPENSE_CATS = ["Dad","Mom","Sam","Glenn","Personal","Dating","Gas","Gear","Miscellaneous","Family","Debt Repayment"];
+const EXPENSE_CATS = ["Dad","Mom","Sam","Glenn","Personal","Dating","Gas","Gear","Groceries","Miscellaneous","Family","Debt Repayment"];
 const CATEGORY_TAGS = {
   "Gear":       ["PEDs / Steroids","Bloodwork","Equipment","Clothing"],
   "Personal":   ["Supplements","Grooming","Self-care","Other"],
   "Dating":     ["Dates","Gifts","Flowers","Other"],
-  "Family":     ["Groceries","Dining","Household","Other"],
+  "Family":     ["Dining","Household","Other"],
+  "Groceries":  ["Weekly Shop","Household Supplies","Bulk / Stock-up","Other"],
   "Gas":        ["Fuel","Transport / Rideshare","Other"],
   "Dad":        ["Support","Gift","Other"],
   "Mom":        ["Support","Gift","Other"],
@@ -113,7 +114,7 @@ FINANCIAL FLOW:
 - EXPENSES: always fiat. SGD from revolut_sgd. IDR from bca_idr. Never deduct from crypto for expenses.
 -TRANSFERS:  Transfers between accounts = type:"transfer", category:"Transfer". Two entries: label "Transfer → X" and "Transfer ← Y"
 ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
-EXPENSE CATEGORIES (EXACTLY one): Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
+EXPENSE CATEGORIES (EXACTLY one): Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Groceries, Miscellaneous, Family, Debt Repayment
 CATEGORY MAPPING:
 - dad, father, papa → Dad | mom, mother, mama → Mom | sam → Sam | glenn → Glenn
 - gear, steroids, mast, test, tren, testosterone, anavar, winstrol, deca, eq, npp, bloodwork, blood test, labs, needles, syringes, pins, vials, any PED → Gear
@@ -121,14 +122,16 @@ CATEGORY MAPPING:
 - dating, date, girlfriend, flowers → Dating
 - personal, haircut, grooming → Personal
 - supplements, supps, vitamins, protein, creatine, pre workout → Personal
-- family, food, groceries, dinner, lunch, breakfast → Family
+- groceries, supermarket, market, grocery shopping, household supplies → Groceries
+- family, dinner, lunch, breakfast, restaurant, eating out → Family
 - debt, loan, repayment, installment → Debt Repayment
 - anything else → Miscellaneous
 TAG (subcategory — pick ONE specific tag under the category, more precise than the category itself):
 - Gear → "PEDs / Steroids" (steroids/mast/test/tren/PEDs), "Bloodwork" (blood tests/labs), "Equipment", or "Clothing"
 - Personal → "Supplements" (protein/vitamins/creatine), "Grooming" (haircut), "Self-care", or "Other"
 - Dating → "Dates", "Gifts", "Flowers", or "Other"
-- Family → "Groceries", "Dining", "Household", or "Other"
+- Family → "Dining", "Household", or "Other"
+- Groceries → "Weekly Shop", "Household Supplies", "Bulk / Stock-up", or "Other"
 - Gas → "Fuel", "Transport / Rideshare", or "Other"
 - Dad/Mom/Sam/Glenn → "Support" (regular help), "Gift", or "Other"
 - Miscellaneous → "Unclassified", "One-off", or "Other"
@@ -165,9 +168,9 @@ async function aiChat(userMsg,state,bp,chatHistory){
   const sys=`You are Jo's personal finance AI — sharp, direct, data-driven.
 FINANCIAL FLOW: INCOME=crypto(BTC→metamask_btc/coinbase_btc, USDT→coinbase_usdt/metamask_usdt). EXPENSES=fiat(SGD→revolut_sgd, IDR→bca_idr). "$" in expenses=SGD. TRANSFERS=two entries.
 ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
-EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Miscellaneous, Family, Debt Repayment
-CATEGORY: steroids/PEDs/bloodwork=Gear. supplements/vitamins/protein=Personal. Never invent categories.
-TAG (subcategory, one level more specific than category): Gear→PEDs/Steroids|Bloodwork|Equipment|Clothing. Personal→Supplements|Grooming|Self-care|Other. Dating→Dates|Gifts|Flowers|Other. Family→Groceries|Dining|Household|Other. Gas→Fuel|Transport / Rideshare|Other. Dad/Mom/Sam/Glenn→Support|Gift|Other. Miscellaneous→Unclassified|One-off|Other. If unsure use that category's "Other".
+EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Groceries, Miscellaneous, Family, Debt Repayment
+CATEGORY: steroids/PEDs/bloodwork=Gear. supplements/vitamins/protein=Personal. supermarket/groceries/household supplies=Groceries. dining out/restaurant=Family. Never invent categories.
+TAG (subcategory, one level more specific than category): Gear→PEDs/Steroids|Bloodwork|Equipment|Clothing. Personal→Supplements|Grooming|Self-care|Other. Dating→Dates|Gifts|Flowers|Other. Family→Dining|Household|Other. Groceries→Weekly Shop|Household Supplies|Bulk / Stock-up|Other. Gas→Fuel|Transport / Rideshare|Other. Dad/Mom/Sam/Glenn→Support|Gift|Other. Miscellaneous→Unclassified|One-off|Other. If unsure use that category's "Other".
 LIVE STATE:
 - BTC: ${bp?cu(bp):"unknown"} | Basis: ${cu(state.btcCostBasis)} | PnL: ${cu(btcPnL)}
 - Total BTC: ${cbt(btcTotal)} = ${bp?cu(btcTotal*bp):"?"}
