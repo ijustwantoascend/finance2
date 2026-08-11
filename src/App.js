@@ -41,8 +41,8 @@ function resolveTag(rawTag,category){
 }
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTH_KEYS   = ["01","02","03","04","05","06","07","08","09","10","11","12"];
-const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","AI Chat"];
-const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","✦"];
+const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","Inventory","AI Chat"];
+const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","⬡","✦"];
 const HISTORICAL = {
   "2026-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:645.35,Dating:232.24,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
   "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:145.35,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:0,Family:7.97,"Debt Repayment":0}},
@@ -2120,9 +2120,227 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
   );
 }
 
+// ── Supply Tracker ────────────────────────────────────────────────────────────
+function daysUntil(dateStr){
+  const target=new Date(dateStr+"T00:00:00");
+  const today=new Date();today.setHours(0,0,0,0);
+  return Math.round((target-today)/86400000);
+}
+// Pill/tablet type: qty on hand ÷ daily dose
+function computeRunsOutPill(qty,dailyDose){
+  const q=parseFloat(qty)||0;
+  const d=parseFloat(dailyDose)||0;
+  if(d<=0)return null;
+  const daysLeft=Math.floor(q/d);
+  const dt=new Date();
+  dt.setDate(dt.getDate()+daysLeft);
+  return dt.toISOString().slice(0,10);
+}
+// Injectable/oil type: total mg on hand (vials × mg-per-vial) ÷ weekly usage, converted to days
+function computeRunsOutOil(vialsOnHand,mgPerVial,weeklyUsageMg){
+  const vials=parseFloat(vialsOnHand)||0;
+  const mgVial=parseFloat(mgPerVial)||0;
+  const weekly=parseFloat(weeklyUsageMg)||0;
+  if(weekly<=0)return null;
+  const totalMg=vials*mgVial;
+  const daysLeft=Math.floor((totalMg/weekly)*7);
+  const dt=new Date();
+  dt.setDate(dt.getDate()+daysLeft);
+  return dt.toISOString().slice(0,10);
+}
+function computeRunsOut(item){
+  if(item.itemType==="oil") return computeRunsOutOil(item.vialsOnHand,item.mgPerVial,item.weeklyUsageMg);
+  return computeRunsOutPill(item.qty,item.dailyDose);
+}
+function runOutStatus(daysLeft){
+  if(daysLeft===null) return {color:T.textD,bg:"#F9FAFB",label:"—"};
+  if(daysLeft<=14) return {color:T.red,bg:"#FEF2F2",label:`${daysLeft}d left`};
+  if(daysLeft<=30) return {color:T.gold,bg:"#FEF3C7",label:`${daysLeft}d left`};
+  return {color:T.green,bg:"#F0FDF4",label:`${daysLeft}d left`};
+}
+
+const SUPPLY_CATEGORIES = ["Ancillaries","Steroids","Supplements"];
+
+function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
+  const[activeTab,setActiveTab]=useState("Ancillaries");
+  const[showForm,setShowForm]=useState(false);
+  const emptyForm={
+    itemType:"pill", name:"", category:activeTab,
+    qty:"", unit:"tabs", dailyDose:"",
+    concentrationMgMl:"", vialVolumeMl:"", mgPerVial:"", vialsOnHand:"", weeklyUsageMg:"",
+    restockCostIDR:"", restockQty:"", notes:"",
+  };
+  const[form,setForm]=useState(emptyForm);
+
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
+  const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
+
+  const computedMgPerVial=(parseFloat(form.concentrationMgMl)||0)*(parseFloat(form.vialVolumeMl)||0);
+  const effectiveMgPerVial=form.mgPerVial?parseFloat(form.mgPerVial):(computedMgPerVial||0);
+
+  const CAT_COLOR={"Ancillaries":T.blue,"Steroids":T.gold,"Supplements":T.purple};
+
+  const enriched=supplies.map(s=>{
+    const runsOut=s.runsOutOverride||computeRunsOut(s);
+    const daysLeft=runsOut?daysUntil(runsOut):null;
+    return{...s,runsOut,daysLeft};
+  }).filter(s=>(s.category||"Ancillaries")===activeTab)
+    .sort((a,b)=>{
+      if(a.daysLeft===null)return 1;
+      if(b.daysLeft===null)return -1;
+      return a.daysLeft-b.daysLeft;
+    });
+
+  const tabCounts={};
+  SUPPLY_CATEGORIES.forEach(c=>{tabCounts[c]=supplies.filter(s=>(s.category||"Ancillaries")===c).length;});
+
+  function submitAdd(){
+    if(!form.name.trim())return;
+    if(form.itemType==="pill"&&!form.qty)return;
+    if(form.itemType==="oil"&&!form.vialsOnHand)return;
+    onAdd({
+      ...form,
+      category:activeTab,
+      qty:parseFloat(form.qty)||0,
+      dailyDose:parseFloat(form.dailyDose)||0,
+      concentrationMgMl:parseFloat(form.concentrationMgMl)||0,
+      vialVolumeMl:parseFloat(form.vialVolumeMl)||0,
+      mgPerVial:effectiveMgPerVial,
+      vialsOnHand:parseFloat(form.vialsOnHand)||0,
+      weeklyUsageMg:parseFloat(form.weeklyUsageMg)||0,
+      restockCostIDR:parseFloat(form.restockCostIDR)||0,
+      restockQty:parseFloat(form.restockQty)||0,
+    });
+    setShowForm(false);
+    setForm({...emptyForm,category:activeTab});
+  }
+
+  // Side badge — red within a week, gold within a month, otherwise quiet
+  function runOutBadge(daysLeft,runsOut){
+    if(daysLeft===null) return <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>—</span>;
+    const isUrgent=daysLeft<=7;
+    const isSoon=daysLeft<=30&&!isUrgent;
+    const color=isUrgent?T.red:isSoon?T.gold:T.textM;
+    const bg=isUrgent?"#FEF2F2":isSoon?"#FEF3C7":"#F9FAFB";
+    return(
+      <div style={{textAlign:"right",flexShrink:0}}>
+        <span style={{display:"inline-block",background:bg,color,fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:12,fontFamily:T.mono,whiteSpace:"nowrap"}}>
+          {daysLeft<0?`${Math.abs(daysLeft)}d overdue`:`${daysLeft}d left`}
+        </span>
+        <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:3}}>{runsOut}</div>
+      </div>
+    );
+  }
+
+  return(
+    <div style={{padding:"20px 16px"}}>
+
+      {/* Category tabs */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
+        {SUPPLY_CATEGORIES.map(cat=>{
+          const active=activeTab===cat;
+          return(
+            <button key={cat} onClick={()=>{setActiveTab(cat);setShowForm(false);}}
+              style={{display:"flex",alignItems:"center",gap:7,background:active?CAT_COLOR[cat]:T.white,border:`1px solid ${active?CAT_COLOR[cat]:T.border}`,borderRadius:8,padding:"9px 16px",cursor:"pointer"}}>
+              <span style={{fontSize:13,fontWeight:active?600:500,color:active?"#fff":T.text,fontFamily:T.sans}}>{cat}</span>
+              <span style={{fontSize:11,color:active?"#fff":T.textD,fontFamily:T.mono}}>{tabCounts[cat]}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── LIST — the main content, at the top ── */}
+      <Card style={{marginBottom:16}}>
+        <CardHeader title={`${activeTab} · ${enriched.length} item${enriched.length!==1?"s":""}`}/>
+        {enriched.length===0
+          ?<div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>No {activeTab.toLowerCase()} tracked yet — add one below.</div>
+          :enriched.map((s,i)=>{
+            const isOil=s.itemType==="oil";
+            return(
+              <div key={s.id} style={{display:"flex",alignItems:"center",gap:14,padding:"13px 18px",borderBottom:i<enriched.length-1?`1px solid #F9FAFB`:"none"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,color:T.textS,fontWeight:600}}>{s.name}</div>
+                  <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>
+                    {isOil
+                      ? `${s.vialsOnHand} vial${s.vialsOnHand!==1?"s":""}${s.weeklyUsageMg>0?` · ${s.weeklyUsageMg}mg/wk`:""}`
+                      : `${s.qty} ${s.unit}${s.dailyDose>0?` · ${s.dailyDose} ${s.unit}/day`:""}`
+                    }
+                    {s.restockCostIDR>0&&` · ~${cid(s.restockCostIDR)}`}
+                    {s.notes&&` · ${s.notes}`}
+                  </div>
+                </div>
+                {runOutBadge(s.daysLeft,s.runsOut)}
+                <div style={{display:"flex",gap:5,flexShrink:0}}>
+                  <button onClick={()=>onRestock(s)} title="Mark restocked" style={{background:"#F0FDF4",color:T.green,border:"1px solid #BBF7D0",borderRadius:4,padding:"5px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono}}>↻</button>
+                  <button onClick={()=>onDelete(s.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16}}>×</button>
+                </div>
+              </div>
+            );
+          })
+        }
+      </Card>
+
+      {/* ── Add form — below the list ── */}
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:showForm?12:0}}>
+        <button onClick={()=>{setShowForm(v=>!v);setForm(f=>({...f,category:activeTab}));}} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"7px 16px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>{showForm?"Cancel":`+ Add to ${activeTab}`}</button>
+      </div>
+
+      {showForm&&(
+        <Card style={{padding:"20px"}}>
+          <div style={{display:"flex",gap:6,marginBottom:14,background:"#F3F4F6",borderRadius:6,padding:3,width:"fit-content"}}>
+            {[["pill","Oral / Tablet"],["oil","Injectable / Vial"]].map(([k,label])=>(
+              <button key={k} onClick={()=>setForm(f=>({...f,itemType:k}))}
+                style={{background:form.itemType===k?T.text:"transparent",color:form.itemType===k?"#fff":T.textM,border:"none",borderRadius:4,padding:"6px 14px",fontSize:11,fontWeight:form.itemType===k?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{marginBottom:10}}>
+            <label style={lbl}>Name</label>
+            <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder={form.itemType==="oil"?"e.g. Test E":"e.g. Telmisartan"} style={inp}/>
+          </div>
+
+          {form.itemType==="pill"?(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+              <div><label style={lbl}>Qty on Hand</label><input type="number" value={form.qty} onChange={e=>setForm(f=>({...f,qty:e.target.value}))} placeholder="200" style={inp}/></div>
+              <div><label style={lbl}>Unit</label><input value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} placeholder="tabs" style={inp}/></div>
+              <div><label style={lbl}>Daily Dose ({form.unit||"tabs"})</label><input type="number" step="0.25" value={form.dailyDose} onChange={e=>setForm(f=>({...f,dailyDose:e.target.value}))} placeholder="1" style={inp}/></div>
+            </div>
+          ):(
+            <>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:6}}>
+                <div><label style={lbl}>Concentration (mg/ml)</label><input type="number" value={form.concentrationMgMl} onChange={e=>setForm(f=>({...f,concentrationMgMl:e.target.value,mgPerVial:""}))} placeholder="250" style={inp}/></div>
+                <div><label style={lbl}>Vial Volume (ml)</label><input type="number" value={form.vialVolumeMl} onChange={e=>setForm(f=>({...f,vialVolumeMl:e.target.value,mgPerVial:""}))} placeholder="10" style={inp}/></div>
+                <div><label style={lbl}>or mg / vial direct</label><input type="number" value={form.mgPerVial} onChange={e=>setForm(f=>({...f,mgPerVial:e.target.value}))} placeholder="2500" style={inp}/></div>
+              </div>
+              {effectiveMgPerVial>0&&<div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginBottom:10}}>≈ {effectiveMgPerVial}mg per vial</div>}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div><label style={lbl}>Vials on Hand</label><input type="number" step="0.5" value={form.vialsOnHand} onChange={e=>setForm(f=>({...f,vialsOnHand:e.target.value}))} placeholder="3" style={inp}/></div>
+                <div><label style={lbl}>Weekly Usage (mg)</label><input type="number" value={form.weeklyUsageMg} onChange={e=>setForm(f=>({...f,weeklyUsageMg:e.target.value}))} placeholder="600" style={inp}/></div>
+              </div>
+            </>
+          )}
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+            <div>
+              <label style={lbl}>Rough Restock Cost (IDR)</label>
+              <input type="number" value={form.restockCostIDR} onChange={e=>setForm(f=>({...f,restockCostIDR:e.target.value}))} placeholder="e.g. 3500000" style={inp}/>
+              {form.restockCostIDR&&<div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>≈ {cu(parseFloat(form.restockCostIDR)/(rates.USDIDR||16200))} · for reference only</div>}
+            </div>
+            <div><label style={lbl}>Restock Qty ({form.itemType==="oil"?"vials":form.unit||"tabs"})</label><input type="number" value={form.restockQty} onChange={e=>setForm(f=>({...f,restockQty:e.target.value}))} placeholder={form.itemType==="oil"?"e.g. 5":"e.g. 200"} style={inp}/></div>
+          </div>
+          <div style={{marginBottom:12}}><label style={lbl}>Notes (optional)</label><input value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} placeholder="Cycle notes, source, etc." style={inp}/></div>
+          <button onClick={submitAdd} disabled={!form.name.trim()||(form.itemType==="pill"?!form.qty:!form.vialsOnHand)} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Add to {activeTab}</button>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // BUDGET FUNCTION
 
-function Budget({st,bp,budgets,onSaveBudgets}){
+function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSupply,onDeleteSupply}){
   const{ledger,rates}=st;
   const[editing,setEditing]=useState(false);
   const[totalIDR,setTotalIDR]=useState(budgets.totalIDR||15000000);
@@ -2155,6 +2373,7 @@ function Budget({st,bp,budgets,onSaveBudgets}){
   const monthWishlist=wishlist.filter(w=>w.targetMonth===thisM&&!w.purchased);
   const wishTotalIDR=monthWishlist.reduce((s,w)=>s+(parseFloat(w.amountIDR)||0),0);
   const wishTotalUSD=wishTotalIDR/(rates.USDIDR||16200);
+
   const grandTotalIDR=budgetTotalIDR+wishTotalIDR;
   const projectedIncome=md.inc;
   const canAfford=projectedIncome>=(spentTotalUSD+wishTotalUSD);
@@ -2456,11 +2675,13 @@ export default function App(){
   const[ledger,setLedger]=useState([]);
   const[orders,setOrders]=useState([]);
   const[budgets,setBudgets]=useState({});
+  const[supplies,setSupplies]=useState([]);
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
   const[rates,setRates]=useState(DEFAULT_RATES);
   const[btcCostBasis,setBtcCostBasis]=useState(0);
   const[btcPrice,setBtcPrice]=useState(null);
   const[view,setView]=useState("Dashboard");
+  const[navOpen,setNavOpen]=useState(false);
   const[btcLoading,setBtcLoading]=useState(false);
   const[dbLoading,setDbLoading]=useState(true);
   const[toast,setToast]=useState(null);
@@ -2511,6 +2732,19 @@ export default function App(){
         if(orderData&&orderData.length>0)setOrders(orderData.map(o=>({...o,costBTC:parseFloat(o.cost||0),saleBTC:parseFloat(o.sale_price||0),cost:parseFloat(o.cost||0),salePrice:parseFloat(o.sale_price||0),delivered:o.delivered===true||o.status==="delivered"})));
         const walletData=await sb("wallets?order=updated_at.desc&limit=1");
         if(walletData&&walletData[0]){const wd=walletData[0];setWalletRowId(wd.id);setWallets({coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0});}
+        try{
+          const suppliesData=await sb("supplies?order=created_at.desc");
+          if(suppliesData)setSupplies(suppliesData.map(s=>({
+            ...s,
+            itemType:s.item_type||"pill",
+            qty:parseFloat(s.qty)||0,dailyDose:parseFloat(s.daily_dose)||0,
+            concentrationMgMl:parseFloat(s.concentration_mg_ml)||0,vialVolumeMl:parseFloat(s.vial_volume_ml)||0,
+            mgPerVial:parseFloat(s.mg_per_vial)||0,vialsOnHand:parseFloat(s.vials_on_hand)||0,weeklyUsageMg:parseFloat(s.weekly_usage_mg)||0,
+            restockCostIDR:parseFloat(s.restock_cost_idr)||0,restockQty:parseFloat(s.restock_qty)||0,
+            runsOutOverride:s.runs_out_override||null,
+          })));
+        }catch(supErr){ console.error("Supplies load error (table may not exist yet):",supErr); }
+
         const settingsData=await sb("settings");
         if(settingsData)settingsData.forEach(s=>{
           if(s.key==="btc_cost_basis") setBtcCostBasis(parseFloat(s.value)||0);
@@ -2542,6 +2776,48 @@ export default function App(){
     setBudgets(newBudgets);
     try{ await saveSetting("budgets",JSON.stringify(newBudgets)); }
     catch(e){ console.error("Budget save error:",e); }
+  }
+
+  async function addSupply(item){
+    const tempId="tmp-"+Date.now();
+    setSupplies(s=>[{...item,id:tempId},...s]);
+    try{
+      const saved=await sb("supplies","POST",{
+        name:item.name,category:item.category,item_type:item.itemType,
+        qty:item.qty,unit:item.unit,daily_dose:item.dailyDose,
+        concentration_mg_ml:item.concentrationMgMl,vial_volume_ml:item.vialVolumeMl,
+        mg_per_vial:item.mgPerVial,vials_on_hand:item.vialsOnHand,weekly_usage_mg:item.weeklyUsageMg,
+        restock_cost_idr:item.restockCostIDR,restock_qty:item.restockQty,notes:item.notes||"",
+      });
+      const realId=saved?.[0]?.id;
+      if(realId) setSupplies(s=>s.map(x=>x.id===tempId?{...x,id:realId}:x));
+      showToast("✓ Added to Supply Tracker");
+    }catch(e){ console.error("Supply add error:",e); showToast("⚠ Saved locally — Supabase error"); }
+  }
+
+  async function restockSupply(item){
+    const isOil=item.itemType==="oil";
+    if(isOil){
+      const newVials=item.restockQty>0?item.restockQty:item.vialsOnHand;
+      setSupplies(s=>s.map(x=>x.id===item.id?{...x,vialsOnHand:newVials,runsOutOverride:null}:x));
+      try{
+        await sb(`supplies?id=eq.${item.id}`,"PATCH",{vials_on_hand:newVials,runs_out_override:null});
+        showToast(`✓ ${item.name} restocked`);
+      }catch(e){ console.error("Restock error:",e); }
+    }else{
+      const newQty=item.restockQty>0?item.restockQty:item.qty;
+      setSupplies(s=>s.map(x=>x.id===item.id?{...x,qty:newQty,runsOutOverride:null}:x));
+      try{
+        await sb(`supplies?id=eq.${item.id}`,"PATCH",{qty:newQty,runs_out_override:null});
+        showToast(`✓ ${item.name} restocked`);
+      }catch(e){ console.error("Restock error:",e); }
+    }
+  }
+
+  async function deleteSupply(id){
+    setSupplies(s=>s.filter(x=>x.id!==id));
+    try{ await sb(`supplies?id=eq.${id}`,"DELETE"); }
+    catch(e){ console.error("Supply delete error:",e); }
   }
 
   async function applyTransactions(txs){
@@ -2815,14 +3091,15 @@ export default function App(){
               <span style={{fontSize:9,color:T.textD,letterSpacing:"0.12em",fontFamily:T.mono,fontStyle:"italic"}}>get rich</span>
             </div>
           </div>
-          <div style={{display:"flex",alignItems:"center",gap:1,overflowX:"auto"}}>
-            {NAV_ITEMS.map((n,i)=>(
-              <button key={n} onClick={()=>setView(n)}
-              style={{background:view===n?T.text:"transparent",border:"none",color:view===n?"#FFFFFF":T.textM,fontSize:13,letterSpacing:"0.06em",textTransform:"uppercase",padding:"9px 16px",borderRadius:6,fontFamily:T.mono,fontWeight:view===n?600:400,whiteSpace:"nowrap"}}>
-              {n}
-            </button>
-            ))}
-          </div>
+
+          {/* Current section trigger — opens the popup nav grid */}
+          <button onClick={()=>setNavOpen(true)}
+            style={{display:"flex",alignItems:"center",gap:8,background:"#F3F4F6",border:`1px solid ${T.border}`,borderRadius:8,padding:"7px 14px",cursor:"pointer"}}>
+            <span style={{fontSize:13}}>{NAV_ICONS[NAV_ITEMS.indexOf(view)]}</span>
+            <span style={{fontSize:12,fontWeight:600,color:T.text,fontFamily:T.mono,letterSpacing:"0.04em"}}>{view}</span>
+            <span style={{fontSize:9,color:T.textD}}>▾</span>
+          </button>
+
           <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
             {btcPrice
               ?<div onClick={handleBTCFetch} style={{fontSize:12,color:T.gold,fontFamily:T.mono,cursor:"pointer",fontWeight:600}} title="Click to refresh">
@@ -2836,6 +3113,29 @@ export default function App(){
         </div>
       </div>
 
+      {/* Popup nav overlay */}
+      {navOpen&&(
+        <div onClick={()=>setNavOpen(false)}
+          style={{position:"fixed",inset:0,background:"rgba(10,10,10,0.4)",zIndex:200,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"70px 20px 20px",overflowY:"auto"}}>
+          <div onClick={e=>e.stopPropagation()}
+            style={{background:"#fff",borderRadius:12,padding:16,maxWidth:420,width:"100%",boxShadow:"0 12px 40px rgba(0,0,0,0.25)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,padding:"0 4px"}}>
+              <span style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:600}}>Go to</span>
+              <button onClick={()=>setNavOpen(false)} style={{background:"none",border:"none",color:T.textD,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {NAV_ITEMS.map((n,i)=>(
+                <button key={n} onClick={()=>{setView(n);setNavOpen(false);}}
+                  style={{display:"flex",alignItems:"center",gap:10,background:view===n?T.text:"#F9FAFB",border:`1px solid ${view===n?T.text:T.border}`,borderRadius:8,padding:"14px 14px",cursor:"pointer",textAlign:"left"}}>
+                  <span style={{fontSize:18,color:view===n?"#fff":T.textM}}>{NAV_ICONS[i]}</span>
+                  <span style={{fontSize:13,fontWeight:view===n?600:500,color:view===n?"#fff":T.text,fontFamily:T.sans}}>{n}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{maxWidth:1200,margin:"0 auto"}}>
         {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice}/>}
         {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry} onBulkRecategorize={bulkRecategorize}/>}
@@ -2843,7 +3143,8 @@ export default function App(){
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
-        {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets}/>}
+        {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} onAddSupply={addSupply} onRestockSupply={restockSupply} onDeleteSupply={deleteSupply}/>}
+        {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} rates={rates} bp={btcPrice}/>}
         {view==="AI Chat"  &&<AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>}
       </div>
 
