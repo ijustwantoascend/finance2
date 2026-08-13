@@ -2185,6 +2185,10 @@ function computeRunsOutOil(vialsOnHand,mgPerVial,weeklyUsageMg){
   return dt.toISOString().slice(0,10);
 }
 function computeRunsOut(item){
+  // Items not actively in use (backup/duplicate stock, e.g. a second vial of Test
+  // sitting unopened) shouldn't have a countdown running — only what you're
+  // actually taking right now should deplete.
+  if(item.inUse===false) return null;
   if(item.itemType==="oil") return computeRunsOutOil(item.vialsOnHand,item.mgPerVial,item.weeklyUsageMg);
   return computeRunsOutPill(item.qty,item.dailyDose);
 }
@@ -2197,11 +2201,11 @@ function runOutStatus(daysLeft){
 
 const SUPPLY_CATEGORIES = ["Ancillaries","Steroids","Supplements"];
 
-function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
+function SupplyTracker({supplies,onAdd,onRestock,onDelete,onToggleInUse,rates}){
   const[activeTab,setActiveTab]=useState("Ancillaries");
   const[showForm,setShowForm]=useState(false);
   const emptyForm={
-    itemType:"pill", name:"", category:activeTab,
+    itemType:"pill", name:"", category:activeTab, inUse:true,
     qty:"", unit:"tabs", dailyDose:"",
     concentrationMgMl:"", vialVolumeMl:"", mgPerVial:"", vialsOnHand:"", weeklyUsageMg:"",
     restockCostIDR:"", restockQty:"", notes:"",
@@ -2252,7 +2256,8 @@ function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
   }
 
   // Side badge — red within a week, gold within a month, otherwise quiet
-  function runOutBadge(daysLeft,runsOut){
+  function runOutBadge(daysLeft,runsOut,inUse){
+    if(inUse===false) return <span style={{display:"inline-block",background:"#F3F4F6",color:T.textM,fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:12,fontFamily:T.mono,whiteSpace:"nowrap"}}>Reserve</span>;
     if(daysLeft===null) return <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>—</span>;
     const isUrgent=daysLeft<=7;
     const isSoon=daysLeft<=30&&!isUrgent;
@@ -2292,8 +2297,9 @@ function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
           ?<div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>No {activeTab.toLowerCase()} tracked yet — add one below.</div>
           :enriched.map((s,i)=>{
             const isOil=s.itemType==="oil";
+            const isActive=s.inUse!==false;
             return(
-              <div key={s.id} style={{display:"flex",alignItems:"center",gap:14,padding:"13px 18px",borderBottom:i<enriched.length-1?`1px solid #F9FAFB`:"none"}}>
+              <div key={s.id} style={{display:"flex",alignItems:"center",gap:14,padding:"13px 18px",borderBottom:i<enriched.length-1?`1px solid #F9FAFB`:"none",opacity:isActive?1:0.75}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,color:T.textS,fontWeight:600}}>{s.name}</div>
                   <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>
@@ -2305,8 +2311,13 @@ function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
                     {s.notes&&` · ${s.notes}`}
                   </div>
                 </div>
-                {runOutBadge(s.daysLeft,s.runsOut)}
+                {runOutBadge(s.daysLeft,s.runsOut,s.inUse)}
                 <div style={{display:"flex",gap:5,flexShrink:0}}>
+                  {isActive?(
+                    <button onClick={()=>onToggleInUse(s,false)} title="Pause — move to reserve" style={{background:"#F3F4F6",color:T.textM,border:`1px solid ${T.border}`,borderRadius:4,padding:"5px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono}}>⏸</button>
+                  ):(
+                    <button onClick={()=>onToggleInUse(s,true)} title="Start using — begins the countdown" style={{background:"#F0FDF4",color:T.green,border:"1px solid #BBF7D0",borderRadius:4,padding:"5px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono}}>▶ Start</button>
+                  )}
                   <button onClick={()=>onRestock(s)} title="Mark restocked" style={{background:"#F0FDF4",color:T.green,border:"1px solid #BBF7D0",borderRadius:4,padding:"5px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono}}>↻</button>
                   <button onClick={()=>onDelete(s.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16}}>×</button>
                 </div>
@@ -2323,13 +2334,23 @@ function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
 
       {showForm&&(
         <Card style={{padding:"20px"}}>
-          <div style={{display:"flex",gap:6,marginBottom:14,background:"#F3F4F6",borderRadius:6,padding:3,width:"fit-content"}}>
-            {[["pill","Oral / Tablet"],["oil","Injectable / Vial"]].map(([k,label])=>(
-              <button key={k} onClick={()=>setForm(f=>({...f,itemType:k}))}
-                style={{background:form.itemType===k?T.text:"transparent",color:form.itemType===k?"#fff":T.textM,border:"none",borderRadius:4,padding:"6px 14px",fontSize:11,fontWeight:form.itemType===k?600:400,cursor:"pointer",fontFamily:T.mono}}>
-                {label}
-              </button>
-            ))}
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
+            <div style={{display:"flex",gap:6,background:"#F3F4F6",borderRadius:6,padding:3,width:"fit-content"}}>
+              {[["pill","Oral / Tablet"],["oil","Injectable / Vial"]].map(([k,label])=>(
+                <button key={k} onClick={()=>setForm(f=>({...f,itemType:k}))}
+                  style={{background:form.itemType===k?T.text:"transparent",color:form.itemType===k?"#fff":T.textM,border:"none",borderRadius:4,padding:"6px 14px",fontSize:11,fontWeight:form.itemType===k?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:6,background:"#F3F4F6",borderRadius:6,padding:3,width:"fit-content"}}>
+              {[[true,"Active — using now"],[false,"Reserve — not started"]].map(([v,label])=>(
+                <button key={String(v)} onClick={()=>setForm(f=>({...f,inUse:v}))}
+                  style={{background:form.inUse===v?(v?T.green:T.textD):"transparent",color:form.inUse===v?"#fff":T.textM,border:"none",borderRadius:4,padding:"6px 14px",fontSize:11,fontWeight:form.inUse===v?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div style={{marginBottom:10}}>
@@ -2761,6 +2782,7 @@ export default function App(){
           if(suppliesData)setSupplies(suppliesData.map(s=>({
             ...s,
             itemType:s.item_type||"pill",
+            inUse:s.in_use!==false,
             qty:parseFloat(s.qty)||0,dailyDose:parseFloat(s.daily_dose)||0,
             concentrationMgMl:parseFloat(s.concentration_mg_ml)||0,vialVolumeMl:parseFloat(s.vial_volume_ml)||0,
             mgPerVial:parseFloat(s.mg_per_vial)||0,vialsOnHand:parseFloat(s.vials_on_hand)||0,weeklyUsageMg:parseFloat(s.weekly_usage_mg)||0,
@@ -2807,7 +2829,7 @@ export default function App(){
     setSupplies(s=>[{...item,id:tempId},...s]);
     try{
       const saved=await sb("supplies","POST",{
-        name:item.name,category:item.category,item_type:item.itemType,
+        name:item.name,category:item.category,item_type:item.itemType,in_use:item.inUse!==false,
         qty:item.qty,unit:item.unit,daily_dose:item.dailyDose,
         concentration_mg_ml:item.concentrationMgMl,vial_volume_ml:item.vialVolumeMl,
         mg_per_vial:item.mgPerVial,vials_on_hand:item.vialsOnHand,weekly_usage_mg:item.weeklyUsageMg,
@@ -2836,6 +2858,14 @@ export default function App(){
         showToast(`✓ ${item.name} restocked`);
       }catch(e){ console.error("Restock error:",e); }
     }
+  }
+
+  async function toggleSupplyInUse(item,inUse){
+    setSupplies(s=>s.map(x=>x.id===item.id?{...x,inUse}:x));
+    try{
+      await sb(`supplies?id=eq.${item.id}`,"PATCH",{in_use:inUse});
+      showToast(inUse?`✓ ${item.name} — countdown started`:`✓ ${item.name} moved to reserve`);
+    }catch(e){ console.error("Toggle in-use error:",e); }
   }
 
   async function deleteSupply(id){
@@ -3174,7 +3204,7 @@ export default function App(){
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} onAddSupply={addSupply} onRestockSupply={restockSupply} onDeleteSupply={deleteSupply}/>}
-        {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} rates={rates} bp={btcPrice}/>}
+        {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
         {view==="AI Chat"  &&<AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>}
       </div>
 
