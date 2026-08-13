@@ -314,9 +314,14 @@ function Dashboard({st,bp}){
  
   // ── Open orders ──
   const openOrders=orders.filter(o=>!o.delivered);
-  const orderProfitBTC=orders.reduce((s,o)=>s+(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0)),0);
+  function orderProfitUSD(o){
+    const currency=o.currency||"BTC";
+    const profit=parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0);
+    return currency==="BTC"?profit*(bp||0):profit;
+  }
+  const orderProfitTotalUSD=orders.reduce((s,o)=>s+orderProfitUSD(o),0);
   const monthOrders=orders.filter(o=>o.date?.startsWith(thisM));
-  const monthOrderProfitBTC=monthOrders.reduce((s,o)=>s+(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0)),0);
+  const monthOrderProfitUSD=monthOrders.reduce((s,o)=>s+orderProfitUSD(o),0);
  
   // ── Category spend snapshot (top 4) ──
   const catSnapshot=EXPENSE_CATS.map(c=>({name:c,value:md.cats[c]||0})).filter(d=>d.value>0).sort((a,b)=>b.value-a.value).slice(0,4);
@@ -379,7 +384,7 @@ function Dashboard({st,bp}){
         <Metric label="Net (MTD)" value={cu(md.net)} color={md.net>=0?T.green:T.red}/>
         <Metric label="Margin" value={md.inc>0?cp(md.margin):"—"} color={md.margin>0.5?T.green:T.gold}/>
         <Metric label="Runway" value={runwayDays!==null?`${runwayDays}d`:"—"} color={T.blue} sub="liquid ÷ daily spend"/>
-        <Metric label="Open Orders" value={openOrders.length} color={T.purple} sub={`${cbt(orderProfitBTC)} total profit`}/>
+        <Metric label="Open Orders" value={openOrders.length} color={T.purple} sub={`${cu(orderProfitTotalUSD)} total profit`}/>
       </div>
 
       {/* ── BTC Drawdown Stress Test ── */}
@@ -529,10 +534,12 @@ function Dashboard({st,bp}){
         </Card>
  
         <Card>
-          <CardHeader title="Open Orders" action={<span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{cbt(monthOrderProfitBTC)} this month</span>}/>
+          <CardHeader title="Open Orders" action={<span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{cu(monthOrderProfitUSD)} this month</span>}/>
           {openOrders.length===0&&<div style={{padding:"24px 20px",color:T.textD,fontSize:12,fontFamily:T.mono}}>No open orders.</div>}
           {openOrders.slice(0,5).map(o=>{
-            const profitBTC=parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0);
+            const currency=o.currency||"BTC";
+            const profit=parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0);
+            const profitUSD=currency==="BTC"?profit*(bp||0):profit;
             return(
               <div key={o.id} style={{padding:"10px 18px",borderBottom:`1px solid #F9FAFB`}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -541,8 +548,8 @@ function Dashboard({st,bp}){
                     <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:1}}>{o.vendor} · {o.date}{o.platform?` · ${o.platform}`:""}</div>
                   </div>
                   <div style={{textAlign:"right",flexShrink:0,marginLeft:8}}>
-                    <div style={{fontSize:12,color:T.green,fontWeight:700,fontFamily:T.mono}}>{cbt(profitBTC)}</div>
-                    {bp&&<div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{cu(profitBTC*bp)}</div>}
+                    <div style={{fontSize:12,color:T.green,fontWeight:700,fontFamily:T.mono}}>{currency==="USDT"?"$"+profit.toFixed(2):cbt(profit)}</div>
+                    <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{cu(profitUSD)}</div>
                   </div>
                 </div>
               </div>
@@ -1068,17 +1075,27 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
   const[statusF,setStatusF]=useState("all"); // all | pending | delivered
   const[search,setSearch]=useState("");
   const[sortBy,setSortBy]=useState("date"); // date | profit | client
- 
-  const emptyForm={vendor:vendors[0]||"Violet",client:"",platform:"",items:"",costBTC:"",saleBTC:"",date:new Date().toISOString().slice(0,10)};
+
+  const emptyForm={vendor:vendors[0]||"Violet",client:"",platform:"",items:"",currency:"BTC",costBTC:"",saleBTC:"",date:new Date().toISOString().slice(0,10)};
   const[form,setForm]=useState(emptyForm);
- 
+
+  // Currency-aware stats: amounts are in the order's OWN currency (BTC or USDT).
+  // USD equivalent only needs the live BTC price when the order is BTC-denominated —
+  // USDT is treated as ≈1:1 with USD.
   function orderStats(o){
-    const costBTC=parseFloat(o.costBTC||o.cost||0);
-    const saleBTC=parseFloat(o.saleBTC||o.salePrice||0);
-    const profitBTC=saleBTC-costBTC;
-    return{costBTC,saleBTC,profitBTC,profitUSD:profitBTC*(bp||0),margin:saleBTC>0?profitBTC/saleBTC:0};
+    const currency=o.currency||"BTC";
+    const cost=parseFloat(o.costBTC||o.cost||0);
+    const sale=parseFloat(o.saleBTC||o.salePrice||0);
+    const profit=sale-cost;
+    const profitUSD=currency==="BTC"?profit*(bp||0):profit;
+    const margin=sale>0?profit/sale:0;
+    return{currency,cost,sale,profit,profitUSD,margin};
   }
- 
+  function fmtAmt(n,currency){
+    if(currency==="USDT") return "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+    return Number(n||0).toFixed(6)+" ₿";
+  }
+
   // ── Period filter ──
   function inPeriod(dateStr){
     if(period==="all"||!dateStr)return true;
@@ -1090,7 +1107,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
     if(period==="90d")return diffDays<=90;
     return true;
   }
- 
+
   const filtered=orders.filter(o=>{
     const pOk=inPeriod(o.date);
     const sOk=statusF==="all"||(statusF==="pending"&&!o.delivered)||(statusF==="delivered"&&o.delivered);
@@ -1102,28 +1119,36 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
     return pOk&&sOk&&qOk;
   }).sort((a,b)=>{
     if(sortBy==="profit"){
-      const sa=orderStats(a).profitBTC, sb=orderStats(b).profitBTC;
+      const sa=orderStats(a).profitUSD, sb=orderStats(b).profitUSD;
       return sb-sa;
     }
     if(sortBy==="client")return (a.client||"").localeCompare(b.client||"");
     return (b.date||"").localeCompare(a.date||"");
   });
- 
-  const totals=filtered.reduce((acc,o)=>{const s=orderStats(o);return{costBTC:acc.costBTC+s.costBTC,saleBTC:acc.saleBTC+s.saleBTC,profitBTC:acc.profitBTC+s.profitBTC,profitUSD:acc.profitUSD+s.profitUSD};},{costBTC:0,saleBTC:0,profitBTC:0,profitUSD:0});
-  const avgMargin=totals.saleBTC>0?totals.profitBTC/totals.saleBTC:0;
+
+  // Totals split by currency (native units don't mix), plus a combined USD figure that always works
+  const totals=filtered.reduce((acc,o)=>{
+    const s=orderStats(o);
+    const bucket=s.currency==="USDT"?acc.usdt:acc.btc;
+    bucket.sale+=s.sale; bucket.cost+=s.cost; bucket.profit+=s.profit;
+    acc.profitUSD+=s.profitUSD;
+    return acc;
+  },{btc:{sale:0,cost:0,profit:0},usdt:{sale:0,cost:0,profit:0},profitUSD:0});
+  const totalSaleUSD=totals.btc.sale*(bp||0)+totals.usdt.sale;
+  const avgMargin=totalSaleUSD>0?totals.profitUSD/totalSaleUSD:0;
   const pending=filtered.filter(o=>!o.delivered).length;
   const done=filtered.filter(o=>o.delivered).length;
- 
-  // Vendor breakdown for filtered set
+
+  // Vendor breakdown for filtered set — profit shown in USD since vendors can mix currencies
   const vendorBreakdown={};
   filtered.forEach(o=>{
     const v=o.vendor||"Unknown";
-    if(!vendorBreakdown[v])vendorBreakdown[v]={count:0,profit:0};
+    if(!vendorBreakdown[v])vendorBreakdown[v]={count:0,profitUSD:0};
     vendorBreakdown[v].count++;
-    vendorBreakdown[v].profit+=orderStats(o).profitBTC;
+    vendorBreakdown[v].profitUSD+=orderStats(o).profitUSD;
   });
-  const topVendors=Object.entries(vendorBreakdown).sort((a,b)=>b[1].profit-a[1].profit).slice(0,4);
- 
+  const topVendors=Object.entries(vendorBreakdown).sort((a,b)=>b[1].profitUSD-a[1].profitUSD).slice(0,4);
+
   function addVendor(){if(!newVendor.trim())return;setVendors(v=>[...v,newVendor.trim()]);setNewVendor("");setShowVendorInput(false);}
   function removeVendor(v){setVendors(vs=>vs.filter(x=>x!==v));}
   function togglePresetItem(code){
@@ -1136,34 +1161,31 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
   }
   function submitOrder(){
     if(!form.client.trim()||!form.saleBTC)return;
-    const newOrder={id:"ORD-"+Date.now(),vendor:form.vendor,client:form.client.trim(),platform:form.platform,items:form.items,saleBTC:parseFloat(form.saleBTC)||0,costBTC:parseFloat(form.costBTC)||0,cost:parseFloat(form.costBTC)||0,salePrice:parseFloat(form.saleBTC)||0,btcAmount:parseFloat(form.saleBTC)||0,date:form.date,delivered:false,status:"pending",deliveryDays:null};
+    const newOrder={id:"ORD-"+Date.now(),vendor:form.vendor,client:form.client.trim(),platform:form.platform,items:form.items,currency:form.currency,saleBTC:parseFloat(form.saleBTC)||0,costBTC:parseFloat(form.costBTC)||0,cost:parseFloat(form.costBTC)||0,salePrice:parseFloat(form.saleBTC)||0,btcAmount:parseFloat(form.saleBTC)||0,date:form.date,delivered:false,status:"pending",deliveryDays:null};
     onAddOrder(newOrder);
     setShowForm(false);
     setForm({...emptyForm,vendor:vendors[0]||"Violet"});
   }
- 
-  const cbt6=n=>Number(n||0).toFixed(6)+" ₿";
-  const cbt4=n=>Number(n||0).toFixed(4)+" ₿";
+
   const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
   const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
   const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
   const profitPreview=(parseFloat(form.saleBTC)||0)-(parseFloat(form.costBTC)||0);
- 
+
   const PERIODS=[["all","All time"],["week","This week"],["month","This month"],["90d","Last 90d"]];
- 
+
   return(
     <div style={{padding:"20px 16px"}}>
- 
+
       {/* Metrics */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:0,marginBottom:16,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
-        <Metric label="Revenue" value={cbt4(totals.saleBTC)} color={T.green} sub={bp?cu(totals.saleBTC*bp):"—"}/>
-        <Metric label="Cost" value={cbt4(totals.costBTC)} color={T.red} sub={bp?cu(totals.costBTC*bp):"—"}/>
-        <Metric label="Profit" value={cbt4(totals.profitBTC)} color={T.blue} sub={bp?cu(totals.profitUSD):"—"}/>
+        <Metric label="BTC Profit" value={fmtAmt(totals.btc.profit,"BTC")} color={T.gold} sub={bp?cu(totals.btc.profit*bp):"—"}/>
+        <Metric label="USDT Profit" value={fmtAmt(totals.usdt.profit,"USDT")} color={T.green}/>
+        <Metric label="Combined Profit $" value={cu(totals.profitUSD)} color={T.purple}/>
         <Metric label="Avg Margin" value={cp(avgMargin)} color={T.gold}/>
         <Metric label="Pending" value={pending} color={T.red} sub={`${done} delivered`}/>
-        {bp&&<Metric label="Live Profit $" value={cu(totals.profitUSD)} color={T.purple} sub={`@ ${cu(bp)}`}/>}
       </div>
- 
+
       {/* Top vendors this period */}
       {topVendors.length>0&&(
         <div style={{marginBottom:14}}>
@@ -1173,13 +1195,13 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
               <div key={v} style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>
                 <span style={{fontSize:12,color:T.textS,fontWeight:600,fontFamily:T.mono}}>{v}</span>
                 <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{d.count} orders</span>
-                <span style={{fontSize:11,color:T.blue,fontWeight:600,fontFamily:T.mono}}>{cbt4(d.profit)}</span>
+                <span style={{fontSize:11,color:T.blue,fontWeight:600,fontFamily:T.mono}}>{cu(d.profitUSD)}</span>
               </div>
             ))}
           </div>
         </div>
       )}
- 
+
       {/* Vendor management bar */}
       <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 16px",marginBottom:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
         <span style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Vendors:</span>
@@ -1199,11 +1221,22 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
           <button onClick={()=>setShowVendorInput(true)} style={{background:"#F3F4F6",border:`1px solid ${T.border}`,color:T.textM,borderRadius:4,padding:"3px 10px",fontSize:10,cursor:"pointer",fontFamily:T.mono}}>+ Add vendor</button>
         )}
       </div>
- 
+
       {/* New order form */}
       {showForm&&(
         <Card style={{marginBottom:16,padding:"20px"}}>
-          <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",marginBottom:16,fontFamily:T.mono,fontWeight:500}}>New Order</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>New Order</div>
+            {/* Currency switch */}
+            <div style={{display:"flex",gap:4,background:"#F3F4F6",borderRadius:6,padding:3}}>
+              {["BTC","USDT"].map(c=>(
+                <button key={c} onClick={()=>setForm(f=>({...f,currency:c}))}
+                  style={{background:form.currency===c?T.text:"transparent",color:form.currency===c?"#fff":T.textM,border:"none",borderRadius:4,padding:"6px 14px",fontSize:11,fontWeight:form.currency===c?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                  {c}
+                </button>
+              ))}
+            </div>
+          </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:12}}>
             <div><label style={lbl}>Vendor</label>
               <select value={form.vendor} onChange={e=>setForm(f=>({...f,vendor:e.target.value}))} style={{...inp,cursor:"pointer"}}>
@@ -1237,21 +1270,21 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:12}}>
             <div>
-              <label style={lbl}>Sale (BTC)</label>
-              <input type="number" step="0.000001" value={form.saleBTC} onChange={e=>setForm(f=>({...f,saleBTC:e.target.value}))} placeholder="0.005800" style={inp}/>
-              {form.saleBTC&&bp&&<div style={{fontSize:10,color:T.green,marginTop:3,fontFamily:T.mono}}>≈ {cu(parseFloat(form.saleBTC)*bp)}</div>}
+              <label style={lbl}>Sale ({form.currency})</label>
+              <input type="number" step={form.currency==="BTC"?"0.000001":"0.01"} value={form.saleBTC} onChange={e=>setForm(f=>({...f,saleBTC:e.target.value}))} placeholder={form.currency==="BTC"?"0.005800":"580.00"} style={inp}/>
+              {form.saleBTC&&<div style={{fontSize:10,color:T.green,marginTop:3,fontFamily:T.mono}}>≈ {form.currency==="BTC"?(bp?cu(parseFloat(form.saleBTC)*bp):"—"):cu(parseFloat(form.saleBTC))}</div>}
             </div>
             <div>
-              <label style={lbl}>Cost (BTC)</label>
-              <input type="number" step="0.000001" value={form.costBTC} onChange={e=>setForm(f=>({...f,costBTC:e.target.value}))} placeholder="0.004200" style={inp}/>
-              {form.costBTC&&bp&&<div style={{fontSize:10,color:T.red,marginTop:3,fontFamily:T.mono}}>≈ {cu(parseFloat(form.costBTC)*bp)}</div>}
+              <label style={lbl}>Cost ({form.currency})</label>
+              <input type="number" step={form.currency==="BTC"?"0.000001":"0.01"} value={form.costBTC} onChange={e=>setForm(f=>({...f,costBTC:e.target.value}))} placeholder={form.currency==="BTC"?"0.004200":"420.00"} style={inp}/>
+              {form.costBTC&&<div style={{fontSize:10,color:T.red,marginTop:3,fontFamily:T.mono}}>≈ {form.currency==="BTC"?(bp?cu(parseFloat(form.costBTC)*bp):"—"):cu(parseFloat(form.costBTC))}</div>}
             </div>
             <div>
               <label style={lbl}>Profit (auto)</label>
               <div style={{background:"#F9FAFB",border:`1px solid ${T.border}`,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,color:profitPreview>0?T.green:T.textD}}>
-                {form.saleBTC||form.costBTC?cbt6(profitPreview):"—"}
+                {form.saleBTC||form.costBTC?fmtAmt(profitPreview,form.currency):"—"}
               </div>
-              {(form.saleBTC||form.costBTC)&&bp&&<div style={{fontSize:10,color:T.purple,marginTop:3,fontFamily:T.mono}}>≈ {cu(profitPreview*bp)}</div>}
+              {(form.saleBTC||form.costBTC)&&<div style={{fontSize:10,color:T.purple,marginTop:3,fontFamily:T.mono}}>≈ {form.currency==="BTC"?(bp?cu(profitPreview*bp):"—"):cu(profitPreview)}</div>}
             </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr",gap:14,marginBottom:16,maxWidth:200}}>
@@ -1263,7 +1296,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
           </div>
         </Card>
       )}
- 
+
       {/* Filter bar */}
       <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
         <div style={{display:"flex",gap:4,background:"#F3F4F6",borderRadius:6,padding:3}}>
@@ -1287,16 +1320,16 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search client, vendor, items..."
           style={{...sel,flex:1,minWidth:180,cursor:"text"}}/>
       </div>
- 
+
       {/* Order list */}
       <Card>
         <div style={{padding:"13px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",background:"#FAFBFC"}}>
           <span style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Order Book · {filtered.length} shown</span>
           <button onClick={()=>{setForm({...emptyForm,vendor:vendors[0]||"Violet"});setShowForm(true);}} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"6px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>+ New Order</button>
         </div>
- 
+
         {filtered.length===0&&<div style={{padding:"48px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>No orders match your filters.</div>}
- 
+
         {filtered.map((o,i)=>{
           const s=orderStats(o);
           return(
@@ -1304,12 +1337,13 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
               {/* Delivery toggle */}
               <input type="checkbox" checked={!!o.delivered} onChange={()=>onUpdateOrder(o.id,{delivered:!o.delivered,status:!o.delivered?"delivered":"pending"})}
                 style={{width:16,height:16,cursor:"pointer",accentColor:T.text,flexShrink:0}}/>
- 
+
               {/* Main info */}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <span style={{fontSize:13,color:T.textS,fontWeight:600}}>{o.client}</span>
                   <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{o.vendor}</span>
+                  <Badge color={s.currency==="USDT"?T.green:T.gold}>{s.currency}</Badge>
                   {o.platform&&<Badge color={T.blue}>{o.platform}</Badge>}
                   {o.delivered&&<Badge color={T.green}>delivered</Badge>}
                 </div>
@@ -1317,53 +1351,52 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
                   {o.items||"—"} · {o.date}
                 </div>
               </div>
- 
+
               {/* Numbers */}
               <div style={{display:"flex",gap:16,alignItems:"center",flexShrink:0}}>
                 <div style={{textAlign:"right"}}>
                   <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>Sale</div>
-                  <div style={{fontSize:12,color:T.green,fontWeight:600,fontFamily:T.mono}}>{cbt6(s.saleBTC)}</div>
+                  <div style={{fontSize:12,color:T.green,fontWeight:600,fontFamily:T.mono}}>{fmtAmt(s.sale,s.currency)}</div>
                 </div>
                 <div style={{textAlign:"right"}}>
                   <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>Cost</div>
-                  <div style={{fontSize:12,color:T.red,fontFamily:T.mono}}>{cbt6(s.costBTC)}</div>
+                  <div style={{fontSize:12,color:T.red,fontFamily:T.mono}}>{fmtAmt(s.cost,s.currency)}</div>
                 </div>
                 <div style={{textAlign:"right",minWidth:90}}>
                   <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>Profit</div>
-                  <div style={{fontSize:13,color:T.blue,fontWeight:700,fontFamily:T.mono}}>{cbt6(s.profitBTC)}</div>
-                  {bp&&<div style={{fontSize:10,color:T.purple,fontFamily:T.mono}}>{cu(s.profitUSD)}</div>}
+                  <div style={{fontSize:13,color:T.blue,fontWeight:700,fontFamily:T.mono}}>{fmtAmt(s.profit,s.currency)}</div>
+                  <div style={{fontSize:10,color:T.purple,fontFamily:T.mono}}>{cu(s.profitUSD)}</div>
                 </div>
                 <div style={{textAlign:"right",minWidth:44}}>
                   <div style={{fontSize:12,color:s.margin>0.2?T.green:T.gold,fontWeight:600,fontFamily:T.mono}}>{cp(s.margin)}</div>
                 </div>
               </div>
- 
+
               <button onClick={()=>onDeleteOrder&&onDeleteOrder(o.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16,flexShrink:0}}>×</button>
             </div>
           );
         })}
- 
+
         {filtered.length>0&&(
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderTop:`2px solid ${T.border}`,background:"#FAFBFC"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderTop:`2px solid ${T.border}`,background:"#FAFBFC",flexWrap:"wrap",gap:10}}>
             <span style={{fontSize:11,color:T.textM,fontWeight:700,fontFamily:T.mono}}>TOTAL ({filtered.length})</span>
-            <div style={{display:"flex",gap:20,alignItems:"baseline"}}>
-              <span style={{fontSize:12,color:T.green,fontWeight:700,fontFamily:T.mono}}>{cbt6(totals.saleBTC)}</span>
-              <span style={{fontSize:12,color:T.red,fontWeight:700,fontFamily:T.mono}}>{cbt6(totals.costBTC)}</span>
-              <span style={{fontSize:13,color:T.blue,fontWeight:700,fontFamily:T.mono}}>{cbt6(totals.profitBTC)}</span>
-              {bp&&<span style={{fontSize:13,color:T.purple,fontWeight:700,fontFamily:T.mono}}>{cu(totals.profitUSD)}</span>}
+            <div style={{display:"flex",gap:20,alignItems:"baseline",flexWrap:"wrap"}}>
+              {totals.btc.sale>0&&<span style={{fontSize:12,color:T.gold,fontWeight:700,fontFamily:T.mono}}>₿ {fmtAmt(totals.btc.profit,"BTC")}</span>}
+              {totals.usdt.sale>0&&<span style={{fontSize:12,color:T.green,fontWeight:700,fontFamily:T.mono}}>{fmtAmt(totals.usdt.profit,"USDT")}</span>}
+              <span style={{fontSize:13,color:T.purple,fontWeight:700,fontFamily:T.mono}}>{cu(totals.profitUSD)}</span>
               <span style={{fontSize:12,color:T.gold,fontWeight:700,fontFamily:T.mono}}>{cp(avgMargin)}</span>
             </div>
           </div>
         )}
       </Card>
- 
-      {bp&&totals.profitBTC>0&&(
+
+      {totals.profitUSD>0&&(
         <div style={{marginTop:10,background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
-          <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,letterSpacing:"0.1em",textTransform:"uppercase"}}>Profit @ live BTC</span>
-          <div style={{display:"flex",gap:20,alignItems:"baseline"}}>
-            <span style={{fontSize:11,color:T.textM,fontFamily:T.mono}}>{cbt6(totals.profitBTC)}</span>
+          <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,letterSpacing:"0.1em",textTransform:"uppercase"}}>Combined Profit</span>
+          <div style={{display:"flex",gap:20,alignItems:"baseline",flexWrap:"wrap"}}>
+            {totals.btc.profit>0&&<span style={{fontSize:11,color:T.textM,fontFamily:T.mono}}>{fmtAmt(totals.btc.profit,"BTC")}</span>}
+            {totals.usdt.profit>0&&<span style={{fontSize:11,color:T.textM,fontFamily:T.mono}}>{fmtAmt(totals.usdt.profit,"USDT")}</span>}
             <span style={{fontSize:14,color:T.purple,fontWeight:700,fontFamily:T.mono}}>= {cu(totals.profitUSD)}</span>
-            <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>@ {cu(bp)}/BTC</span>
           </div>
         </div>
       )}
@@ -1372,7 +1405,6 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
 }
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function Analytics({st,bp}){
-  const{ledger,rates,orders}=st;
   const today=new Date();
   const[monthOffset,setMonthOffset]=useState(0);
   const[expandedCat,setExpandedCat]=useState(null);
@@ -1527,10 +1559,14 @@ function Analytics({st,bp}){
   // 6. Order profit — count-based, always fair to state as-is with a day marker
   const monthOrders=orders.filter(o=>o.date?.startsWith(monthStr));
   if(monthOrders.length>0){
-    const orderProfitBTC=monthOrders.reduce((s,o)=>s+(parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0)),0);
+    const orderProfitUSDTotal=monthOrders.reduce((s,o)=>{
+      const currency=o.currency||"BTC";
+      const profit=parseFloat(o.saleBTC||0)-parseFloat(o.costBTC||0);
+      return s+(currency==="BTC"?profit*(bp||0):profit);
+    },0);
     insights.push({
       type:"info",
-      text:`${monthOrders.length} orders ${isCurrentMonth?`through day ${daysElapsed}`:"this month"} generated ${cbt(orderProfitBTC)}${bp?` (${cu(orderProfitBTC*bp)})`:""} profit.`,
+      text:`${monthOrders.length} orders ${isCurrentMonth?`through day ${daysElapsed}`:"this month"} generated ${cu(orderProfitUSDTotal)} profit.`,
     });
   }
  
@@ -2343,15 +2379,15 @@ function SupplyTracker({supplies,onAdd,onRestock,onDelete,rates}){
 function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSupply,onDeleteSupply}){
   const{ledger,rates}=st;
   const[editing,setEditing]=useState(false);
-  const[totalIDR,setTotalIDR]=useState(budgets.totalIDR||15000000);
-  const[draftPct,setDraftPct]=useState(budgets.pct||{Dad:15,Mom:5,Sam:5,Glenn:5,Personal:10,Dating:10,Gas:5,Gear:15,Miscellaneous:5,Family:10,"Debt Repayment":15});
+  const defaultAmounts={Dad:2250000,Mom:750000,Sam:750000,Glenn:750000,Personal:1500000,Dating:1500000,Gas:750000,Gear:2250000,Groceries:1500000,Miscellaneous:750000,Family:1500000,"Debt Repayment":2250000};
+  const[draftAmounts,setDraftAmounts]=useState(budgets.amounts||defaultAmounts);
   const[wishlist,setWishlist]=useState([]);
   const[showWishForm,setShowWishForm]=useState(false);
   const[wishForm,setWishForm]=useState({name:"",amountIDR:"",targetMonth:new Date().toISOString().slice(0,7),priority:"want",note:""});
   const[selectedMonth,setSelectedMonth]=useState(new Date().toISOString().slice(0,7));
 
-  const pct=budgets.pct||draftPct;
-  const budgetTotalIDR=budgets.totalIDR||totalIDR;
+  const amounts=budgets.amounts||draftAmounts;
+  const budgetTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(amounts[c])||0),0);
   const budgetTotalUSD=budgetTotalIDR/(rates.USDIDR||16200);
 
   const[rolloverOn,setRolloverOn]=useState(true);
@@ -2378,12 +2414,10 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
   const projectedIncome=md.inc;
   const canAfford=projectedIncome>=(spentTotalUSD+wishTotalUSD);
 
-  const totalPct=Object.values(draftPct).reduce((s,v)=>s+(parseFloat(v)||0),0);
-  const pctOk=Math.abs(totalPct-100)<0.1;
+  const draftTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(draftAmounts[c])||0),0);
 
   function saveEdit(){
-    if(!pctOk)return;
-    onSaveBudgets({totalIDR,pct:draftPct});
+    onSaveBudgets({amounts:draftAmounts});
     setEditing(false);
   }
 
@@ -2432,19 +2466,11 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
         <div style={{padding:"20px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:16}}>
             <div>
-              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Monthly Budget Cap</div>
-              {editing?(
-                <div>
-                  <input type="number" step="100000" value={totalIDR} onChange={e=>setTotalIDR(parseFloat(e.target.value)||0)}
-                    style={{...inp,width:200,fontSize:16,fontWeight:700,padding:"8px 12px"}}/>
-                  <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:4}}>≈ {cu(totalIDR/(rates.USDIDR||16200))} USD</div>
-                </div>
-              ):(
-                <div>
-                  <div style={{fontSize:32,fontWeight:800,color:T.text,fontFamily:T.sans,letterSpacing:"-0.02em"}}>{cid(budgetTotalIDR)}</div>
-                  <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu(budgetTotalUSD)} USD</div>
-                </div>
-              )}
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Monthly Budget Cap {editing&&<span style={{color:T.textD,fontWeight:400}}>· sum of categories below</span>}</div>
+              <div>
+                <div style={{fontSize:32,fontWeight:800,color:T.text,fontFamily:T.sans,letterSpacing:"-0.02em"}}>{cid(editing?draftTotalIDR:budgetTotalIDR)}</div>
+                <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu((editing?draftTotalIDR:budgetTotalIDR)/(rates.USDIDR||16200))} USD</div>
+              </div>
             </div>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Spent So Far</div>
@@ -2460,17 +2486,16 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
               {remainingIDR>=0?"Remaining: ":"Over by: "}{cid(Math.abs(remainingIDR))}
             </span>
             <button onClick={editing?saveEdit:()=>setEditing(true)}
-              disabled={editing&&!pctOk}
               style={{background:editing?T.text:T.white,color:editing?"#fff":T.textS,border:`1px solid ${editing?T.text:T.borderS}`,borderRadius:4,padding:"5px 14px",fontSize:10,cursor:"pointer",fontFamily:T.mono,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase"}}>
-              {editing?`Save${!pctOk?" ("+totalPct.toFixed(0)+"%/100%)":""}` :"Edit Budget"}
+              {editing?"Save":"Edit Budget"}
             </button>
           </div>
         </div>
       </Card>
 
-      {/* Category % breakdown */}
+      {/* Category breakdown — nominal IDR per category */}
       <Card style={{marginBottom:16}}>
-        <CardHeader title={editing?"Set % Per Category (must total 100%)":"Category Budget Breakdown"}
+        <CardHeader title={editing?"Set Amount Per Category (IDR)":"Category Budget Breakdown"}
           action={!editing&&(
             <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
               <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,letterSpacing:"0.06em"}}>Rollover unused budget</span>
@@ -2482,8 +2507,8 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
         />
         <div style={{padding:"8px 0"}}>
           {EXPENSE_CATS.map(cat=>{
-            const catPct=parseFloat(pct[cat])||0;
-            const baseBudgetIDR=budgetTotalIDR*(catPct/100);
+            const baseBudgetIDR=parseFloat(amounts[cat])||0;
+            const catPctOfTotal=budgetTotalIDR>0?(baseBudgetIDR/budgetTotalIDR*100):0;
             const prevSpentIDR=(prevMd.cats[cat]||0)*(rates.USDIDR||16200);
             const rolloverIDR=rolloverOn?Math.max(0,baseBudgetIDR-prevSpentIDR):0;
             const catBudgetIDR=baseBudgetIDR+rolloverIDR;
@@ -2494,14 +2519,13 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
             const catSpentPct=catBudgetIDR>0?spentIDR/catBudgetIDR:0;
             const isOver=catSpentPct>=1;
             const isClose=catSpentPct>=0.8&&catSpentPct<1;
-            // Burn-rate projection: only meaningful for the current month, in progress
             const dailyAvgIDR=daysElapsedSel>0?spentIDR/daysElapsedSel:0;
             const projectedEOMIDR=dailyAvgIDR*daysInSelMonth;
             const willExceed=isCurrentMonthSelected&&catBudgetIDR>0&&!isOver&&projectedEOMIDR>catBudgetIDR&&dailyAvgIDR>0;
             const overageDay=willExceed?Math.ceil(catBudgetIDR/dailyAvgIDR):null;
             return(
               <div key={cat} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:catPct>0?6:0}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:baseBudgetIDR>0?6:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:13,color:T.textS,fontWeight:500}}>{cat}</span>
                     {isOver&&<span style={{background:"#FEE2E2",color:T.red,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>OVER</span>}
@@ -2510,14 +2534,14 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
                   </div>
                   {editing?(
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <input type="number" step="1" min="0" max="100" value={draftPct[cat]||0}
-                        onChange={e=>setDraftPct(d=>({...d,[cat]:parseFloat(e.target.value)||0}))}
-                        style={{...inp,width:70,textAlign:"right",padding:"4px 8px"}}/>
-                      <span style={{fontSize:12,color:T.textM,fontFamily:T.mono}}>%</span>
+                      <input type="number" step="50000" min="0" value={draftAmounts[cat]||0}
+                        onChange={e=>setDraftAmounts(d=>({...d,[cat]:parseFloat(e.target.value)||0}))}
+                        style={{...inp,width:130,textAlign:"right",padding:"4px 8px"}}/>
+                      <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,minWidth:32}}>{draftTotalIDR>0?((parseFloat(draftAmounts[cat])||0)/draftTotalIDR*100).toFixed(0):0}%</span>
                     </div>
                   ):(
                     <div style={{textAlign:"right"}}>
-                      <span style={{fontSize:12,color:T.textM,fontFamily:T.mono,fontWeight:500}}>{catPct}% · {cid(catBudgetIDR)}</span>
+                      <span style={{fontSize:12,color:T.textM,fontFamily:T.mono,fontWeight:500}}>{cid(baseBudgetIDR)} · {catPctOfTotal.toFixed(0)}%</span>
                     </div>
                   )}
                 </div>
@@ -2526,7 +2550,7 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
                     <span>⚠</span> At current pace, will exceed budget around day {overageDay} of {daysInSelMonth}
                   </div>
                 )}
-                {catPct>0&&!editing&&(
+                {baseBudgetIDR>0&&!editing&&(
                   <>
                     <div style={{height:4,background:"#F3F4F6",borderRadius:2,overflow:"hidden",marginBottom:4}}>
                       <div style={{height:4,background:statusColor(catSpentPct),borderRadius:2,width:Math.min(100,catSpentPct*100)+"%",transition:"width 0.3s"}}/>
@@ -2539,7 +2563,7 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
                     </div>
                   </>
                 )}
-                {catPct===0&&!editing&&(
+                {baseBudgetIDR===0&&!editing&&(
                   <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>
                     {spentIDR>0?`Spent: ${cid(spentIDR)} — no cap set`:"No cap · no spending"}
                   </div>
@@ -2548,11 +2572,11 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
             );
           })}
           {editing&&(
-            <div style={{padding:"12px 20px",background:pctOk?"#F0FDF4":"#FEF2F2",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:12,fontFamily:T.mono,color:pctOk?T.green:T.red,fontWeight:600}}>
-                Total: {totalPct.toFixed(1)}% {pctOk?"✓ — ready to save":`— needs to be 100%`}
+            <div style={{padding:"12px 20px",background:"#F9FAFB",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:12,fontFamily:T.mono,color:T.text,fontWeight:600}}>
+                Total: {cid(draftTotalIDR)} · 100%
               </span>
-              {!pctOk&&<span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{totalPct<100?`Add ${(100-totalPct).toFixed(1)}% more`:`Remove ${(totalPct-100).toFixed(1)}%`}</span>}
+              <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>auto-calculated from categories above</span>
             </div>
           )}
         </div>
@@ -2984,6 +3008,7 @@ export default function App(){
         items: o.items,
         vendor: o.vendor,
         platform: o.platform || "",
+        currency: o.currency || "BTC",
         cost: o.costBTC,
         sale_price: o.saleBTC,
         btc_amount: o.saleBTC,
@@ -2992,11 +3017,14 @@ export default function App(){
         delivered: o.delivered,
         delivery_days: null,
       });
-      const profitBTC=(parseFloat(o.saleBTC)||0)-(parseFloat(o.costBTC)||0);
-      if(profitBTC>0){
-        const incomeEntry={type:"income",category:"Dropshipping",amount:profitBTC,currency:"BTC",account:"metamask_btc",label:`ORD-${o.id} — ${o.client} (${o.vendor})`,date:o.date};
+      const currency=o.currency||"BTC";
+      const profit=(parseFloat(o.saleBTC)||0)-(parseFloat(o.costBTC)||0);
+      if(profit>0){
+        const account=currency==="USDT"?"metamask_usdt":"metamask_btc";
+        const incomeEntry={type:"income",category:"Dropshipping",amount:profit,currency,account,label:`ORD-${o.id} — ${o.client} (${o.vendor})`,date:o.date};
         await applyTransactions([incomeEntry]);
-        showToast(`✓ Order saved · +${profitBTC.toFixed(6)} ₿ → MetaMask`);
+        const displayAmt=currency==="USDT"?`$${profit.toFixed(2)}`:`${profit.toFixed(6)} ₿`;
+        showToast(`✓ Order saved · +${displayAmt} → ${currency==="USDT"?"MetaMask USDT":"MetaMask BTC"}`);
       }
     }catch(e){
       console.error("Order save error:",e);
@@ -3015,8 +3043,10 @@ export default function App(){
     const order=orders.find(o=>o.id===id);
     setOrders(os=>os.filter(o=>o.id!==id));
     if(order){
-      const profitBTC=Math.abs(parseFloat(order.saleBTC||0))-Math.abs(parseFloat(order.costBTC||0));
-      if(profitBTC>0){const newW={...wallets,metamask_btc:Math.max(0,(wallets.metamask_btc||0)-profitBTC)};await saveWallets(newW);}
+      const currency=order.currency||"BTC";
+      const account=currency==="USDT"?"metamask_usdt":"metamask_btc";
+      const profit=Math.abs(parseFloat(order.saleBTC||0))-Math.abs(parseFloat(order.costBTC||0));
+      if(profit>0){const newW={...wallets,[account]:Math.max(0,(wallets[account]||0)-profit)};await saveWallets(newW);}
       const matchingEntry=ledger.find(e=>e.label&&e.label.includes(id));
       if(matchingEntry){setLedger(l=>l.filter(e=>e.id!==matchingEntry.id));try{await sb(`ledger?id=eq.${matchingEntry.id}`,"DELETE");}catch(e){console.error(e);}}
     }
