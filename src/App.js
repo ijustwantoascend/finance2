@@ -13,13 +13,14 @@ const sb = async (path, method="GET", body=null) => {
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const EXPENSE_CATS = ["Dad","Mom","Sam","Glenn","Personal","Dating","Gas","Gear","Groceries","Miscellaneous","Family","Debt Repayment"];
+const EXPENSE_CATS = ["Dad","Mom","Sam","Glenn","Personal","Dating","Gas","Gear","Groceries","Business Reinvestment","Miscellaneous","Family","Debt Repayment"];
 const CATEGORY_TAGS = {
   "Gear":       ["PEDs / Steroids","Bloodwork","Equipment","Clothing"],
   "Personal":   ["Supplements","Grooming","Self-care","Other"],
   "Dating":     ["Dates","Gifts","Flowers","Other"],
   "Family":     ["Dining","Household","Other"],
   "Groceries":  ["Weekly Shop","Household Supplies","Bulk / Stock-up","Other"],
+  "Business Reinvestment": ["Subscriptions","Software / Tools","Data Plan","Phone Number","Other"],
   "Gas":        ["Fuel","Transport / Rideshare","Other"],
   "Dad":        ["Support","Gift","Other"],
   "Mom":        ["Support","Gift","Other"],
@@ -123,6 +124,7 @@ CATEGORY MAPPING:
 - personal, haircut, grooming → Personal
 - supplements, supps, vitamins, protein, creatine, pre workout → Personal
 - groceries, supermarket, market, grocery shopping, household supplies → Groceries
+- subscription, data plan, phone number, sim card, Claude, ChatGPT, Telegram number, software, SaaS, tool subscription, hosting, domain → Business Reinvestment
 - family, dinner, lunch, breakfast, restaurant, eating out → Family
 - debt, loan, repayment, installment → Debt Repayment
 - anything else → Miscellaneous
@@ -131,6 +133,7 @@ TAG (subcategory — pick ONE specific tag under the category, more precise than
 - Personal → "Supplements" (protein/vitamins/creatine), "Grooming" (haircut), "Self-care", or "Other"
 - Dating → "Dates", "Gifts", "Flowers", or "Other"
 - Family → "Dining", "Household", or "Other"
+- Business Reinvestment → "Subscriptions", "Software / Tools", "Data Plan", "Phone Number", or "Other"
 - Groceries → "Weekly Shop", "Household Supplies", "Bulk / Stock-up", or "Other"
 - Gas → "Fuel", "Transport / Rideshare", or "Other"
 - Dad/Mom/Sam/Glenn → "Support" (regular help), "Gift", or "Other"
@@ -169,7 +172,7 @@ async function aiChat(userMsg,state,bp,chatHistory){
 FINANCIAL FLOW: INCOME=crypto(BTC→metamask_btc/coinbase_btc, USDT→coinbase_usdt/metamask_usdt). EXPENSES=fiat(SGD→revolut_sgd, IDR→bca_idr). "$" in expenses=SGD. TRANSFERS=two entries.
 ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
 EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Groceries, Miscellaneous, Family, Debt Repayment
-CATEGORY: steroids/PEDs/bloodwork=Gear. supplements/vitamins/protein=Personal. supermarket/groceries/household supplies=Groceries. dining out/restaurant=Family. Never invent categories.
+CATEGORY: steroids/PEDs/bloodwork=Gear. supplements/vitamins/protein=Personal. supermarket/groceries/household supplies=Groceries. dining out/restaurant=Family. subscriptions/data plan/phone number/Claude/Telegram/software tools=Business Reinvestment. Never invent categories.
 TAG (subcategory, one level more specific than category): Gear→PEDs/Steroids|Bloodwork|Equipment|Clothing. Personal→Supplements|Grooming|Self-care|Other. Dating→Dates|Gifts|Flowers|Other. Family→Dining|Household|Other. Groceries→Weekly Shop|Household Supplies|Bulk / Stock-up|Other. Gas→Fuel|Transport / Rideshare|Other. Dad/Mom/Sam/Glenn→Support|Gift|Other. Miscellaneous→Unclassified|One-off|Other. If unsure use that category's "Other".
 LIVE STATE:
 - BTC: ${bp?cu(bp):"unknown"} | Basis: ${cu(state.btcCostBasis)} | PnL: ${cu(btcPnL)}
@@ -260,7 +263,7 @@ function Toast({msg,onDone}){
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-function Dashboard({st,bp}){
+function Dashboard({st,bp,onDismissBanner}){
   const{wallets:w,rates,ledger,orders,btcCostBasis}=st;
   const[stressPct,setStressPct]=useState(0); // 0, -10, -30, -50
   const stressBp=bp?bp*(1+stressPct/100):bp;
@@ -287,6 +290,21 @@ function Dashboard({st,bp}){
     const m=buildMonth(ym,ledger,bp,rates);
     return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],net:Math.round(m.net),income:Math.round(m.inc),cost:Math.round(m.cost)};
   });
+
+  // ── Compounding rate — the perpetual metric, not a finish line ──
+  // Trailing average monthly net (income − expense) as a % of current net worth,
+  // then Rule of 72 to translate that into "months to double at this pace."
+  // This is the one number that never "completes" — there's always a next
+  // doubling to chase, and it's grounded in your own recent behavior, not a
+  // fixed target you picked once.
+  const monthsWithData=nwTrend.filter(m=>m.income>0||m.cost>0);
+  const trailingWindow=monthsWithData.slice(-3); // last up to 3 months with any activity
+  const avgMonthlyNet=trailingWindow.length>0?trailingWindow.reduce((s,m)=>s+m.net,0)/trailingWindow.length:0;
+  const monthlyGrowthRate=nw>0?avgMonthlyNet/nw:0; // e.g. 0.05 = 5%/month
+  const annualGrowthRatePct=monthlyGrowthRate*12*100;
+  const monthsToDouble=monthlyGrowthRate>0?72/(monthlyGrowthRate*100):null;
+  const isCompounding=monthlyGrowthRate>0;
+
  
   // ── Portfolio allocation ──
   const allocation=[
@@ -376,7 +394,65 @@ function Dashboard({st,bp}){
           </div>
         </div>
       </div>
- 
+
+      {/* ── Since last checked ── */}
+      {st.lastVisitBanner&&(()=>{
+        const b=st.lastVisitBanner;
+        const sinceLabel=new Date(b.sinceDate+"T00:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"});
+        const hasActivity=b.incomeSinceUSD>0||b.expenseSinceUSD>0;
+        return(
+          <div style={{padding:"16px 16px 0"}}>
+            <Card style={{background:"#F0F9FF",borderColor:"#BFDBFE"}}>
+              <div style={{padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+                <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+                  <span style={{fontSize:11,color:T.blue,fontWeight:600,fontFamily:T.mono,whiteSpace:"nowrap"}}>Since {sinceLabel}:</span>
+                  {hasActivity?(
+                    <>
+                      {b.incomeSinceUSD>0&&<span style={{fontSize:12,color:T.green,fontWeight:600,fontFamily:T.mono}}>+{cu(b.incomeSinceUSD)} income</span>}
+                      {b.expenseSinceUSD>0&&<span style={{fontSize:12,color:T.red,fontWeight:600,fontFamily:T.mono}}>-{cu(b.expenseSinceUSD)} spent</span>}
+                    </>
+                  ):(
+                    <span style={{fontSize:12,color:T.textM,fontFamily:T.mono}}>no transactions logged</span>
+                  )}
+                  {b.nwChange!=null&&<span style={{fontSize:12,color:b.nwChange>=0?T.green:T.red,fontWeight:600,fontFamily:T.mono}}>net worth {b.nwChange>=0?"+":""}{cu(b.nwChange)}</span>}
+                  {b.btcChangePct!=null&&<span style={{fontSize:12,color:b.btcChangePct>=0?T.green:T.red,fontFamily:T.mono}}>BTC {b.btcChangePct>=0?"+":""}{b.btcChangePct.toFixed(1)}%</span>}
+                </div>
+                <button onClick={onDismissBanner} style={{background:"none",border:"none",color:T.blue,cursor:"pointer",fontSize:16,lineHeight:1,flexShrink:0}}>×</button>
+              </div>
+            </Card>
+          </div>
+        );
+      })()}
+
+      {/* ── Compounding rate — the perpetual metric ── */}
+      <div style={{padding:"16px 16px 0"}}>
+        <Card>
+          <div style={{padding:"18px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:16}}>
+            <div>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Compounding Rate</div>
+              {isCompounding?(
+                <div style={{display:"flex",alignItems:"baseline",gap:8}}>
+                  <div style={{fontSize:22,fontWeight:800,color:T.green,fontFamily:T.sans}}>{monthsToDouble<24?`${monthsToDouble.toFixed(0)} months`:`${(monthsToDouble/12).toFixed(1)} years`}</div>
+                  <div style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>to double at this pace</div>
+                </div>
+              ):(
+                <div style={{fontSize:14,color:T.textD,fontFamily:T.mono}}>Not compounding yet — log more income to see your rate</div>
+              )}
+            </div>
+            <div style={{display:"flex",gap:24}}>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:10,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:3}}>Avg Monthly Net</div>
+                <div style={{fontSize:14,fontWeight:700,color:avgMonthlyNet>=0?T.green:T.red,fontFamily:T.mono}}>{cu(avgMonthlyNet)}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:10,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:3}}>Annualized</div>
+                <div style={{fontSize:14,fontWeight:700,color:annualGrowthRatePct>=0?T.green:T.red,fontFamily:T.mono}}>{annualGrowthRatePct>=0?"+":""}{annualGrowthRatePct.toFixed(0)}%</div>
+              </div>
+            </div>
+          </div>
+        </Card>
+      </div>
+
       {/* ── Key metrics row ── */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:0,borderBottom:`1px solid ${T.border}`}}>
         <Metric label="Income (MTD)" value={cu(md.inc)} color={T.green} sub={`${cu(dailyAvgIncome)}/day avg`}/>
@@ -565,6 +641,7 @@ const CAT_COLORS = {
   "Dad":"#DC2626","Mom":"#EA580C","Sam":"#D97706","Glenn":"#65A30D",
   "Personal":"#0891B2","Dating":"#7C3AED","Gas":"#6B7280","Gear":"#1D4ED8",
   "Miscellaneous":"#9CA3AF","Family":"#16A34A","Debt Repayment":"#111827",
+  "Business Reinvestment":"#B45309","Groceries":"#059669",
   "Transfer":"#2563EB","Dropshipping":"#16A34A",
 };
 function catColor(cat){ return CAT_COLORS[cat]||T.textM; }
@@ -1405,6 +1482,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
 }
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function Analytics({st,bp}){
+  const{ledger,rates,orders}=st;
   const today=new Date();
   const[monthOffset,setMonthOffset]=useState(0);
   const[expandedCat,setExpandedCat]=useState(null);
@@ -2025,25 +2103,44 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile}){
         <CardHeader title="Backup & Export"/>
         <div style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
           <div style={{fontSize:12,color:T.textM,fontFamily:T.mono,lineHeight:1.6,maxWidth:420}}>
-            Download a full snapshot of your ledger, orders, wallets, budgets and settings as JSON — a safety copy independent of Supabase.
+            Download a full snapshot of your ledger, orders, wallets, budgets and settings as JSON — a safety copy independent of Supabase. Or export your ledger as CSV for a spreadsheet or accountant.
           </div>
-          <button onClick={()=>{
-            const payload={
-              exportedAt:new Date().toISOString(),
-              wallets:w, rates,
-              btcCostBasis:st.btcCostBasis,
-              ledger:st.ledger, orders:st.orders,
-              budgets:st.budgets||null,
-            };
-            const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
-            const url=URL.createObjectURL(blob);
-            const a=document.createElement("a");
-            a.href=url; a.download=`hxn-backup-${new Date().toISOString().slice(0,10)}.json`;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-          }} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
-            ↓ Export JSON
-          </button>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{
+              const headers=["Date","Type","Category","Tag","Amount","Currency","Account","Label"];
+              const rows=(st.ledger||[]).map(e=>[
+                e.date||"", e.type||"", e.category||"", e.tag||"",
+                e.amount||0, e.currency||"", e.account||"",
+                `"${(e.label||"").replace(/"/g,'""')}"`,
+              ]);
+              const csv=[headers.join(","),...rows.map(r=>r.join(","))].join("\n");
+              const blob=new Blob([csv],{type:"text/csv"});
+              const url=URL.createObjectURL(blob);
+              const a=document.createElement("a");
+              a.href=url; a.download=`hxn-ledger-${new Date().toISOString().slice(0,10)}.csv`;
+              document.body.appendChild(a); a.click(); document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }} style={{background:T.white,color:T.textS,border:`1px solid ${T.borderS}`,borderRadius:5,padding:"9px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+              ↓ Export CSV
+            </button>
+            <button onClick={()=>{
+              const payload={
+                exportedAt:new Date().toISOString(),
+                wallets:w, rates,
+                btcCostBasis:st.btcCostBasis,
+                ledger:st.ledger, orders:st.orders,
+                budgets:st.budgets||null,
+              };
+              const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+              const url=URL.createObjectURL(blob);
+              const a=document.createElement("a");
+              a.href=url; a.download=`hxn-backup-${new Date().toISOString().slice(0,10)}.json`;
+              document.body.appendChild(a); a.click(); document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+              ↓ Export JSON
+            </button>
+          </div>
         </div>
       </Card>
     </div>
@@ -2734,6 +2831,8 @@ export default function App(){
   const[walletRowId,setWalletRowId]=useState(null);
   const[lastReconciled,setLastReconciled]=useState(null);
   const[netWorthTarget,setNetWorthTarget]=useState(100000);
+  const[lastVisitBanner,setLastVisitBanner]=useState(null);
+  const[bannerDismissed,setBannerDismissed]=useState(false);
   const showToast=msg=>setToast(msg);
 
   function tryUnlock(){
@@ -2772,11 +2871,18 @@ export default function App(){
       if(fx)setRates(fx);
       try{
         const ledgerData=await sb("ledger?order=created_at.desc");
-        if(ledgerData)setLedger(ledgerData.map(e=>({...e,amount:parseFloat(e.amount),btcPriceAtTime:e.btc_price_at_time?parseFloat(e.btc_price_at_time):undefined})));
+        const finalLedger=ledgerData?ledgerData.map(e=>({...e,amount:parseFloat(e.amount),btcPriceAtTime:e.btc_price_at_time?parseFloat(e.btc_price_at_time):undefined})):[];
+        if(ledgerData)setLedger(finalLedger);
         const orderData=await sb("orders?order=created_at.desc");
         if(orderData&&orderData.length>0)setOrders(orderData.map(o=>({...o,costBTC:parseFloat(o.cost||0),saleBTC:parseFloat(o.sale_price||0),cost:parseFloat(o.cost||0),salePrice:parseFloat(o.sale_price||0),delivered:o.delivered===true||o.status==="delivered"})));
         const walletData=await sb("wallets?order=updated_at.desc&limit=1");
-        if(walletData&&walletData[0]){const wd=walletData[0];setWalletRowId(wd.id);setWallets({coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0});}
+        let finalWallets=DEFAULT_WALLETS;
+        if(walletData&&walletData[0]){
+          const wd=walletData[0];
+          setWalletRowId(wd.id);
+          finalWallets={coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0};
+          setWallets(finalWallets);
+        }
         try{
           const suppliesData=await sb("supplies?order=created_at.desc");
           if(suppliesData)setSupplies(suppliesData.map(s=>({
@@ -2798,6 +2904,36 @@ export default function App(){
           if(s.key==="last_reconciled") setLastReconciled(s.value);
           if(s.key==="net_worth_target") setNetWorthTarget(parseFloat(s.value)||100000);
         });
+
+        // ── Since last checked ──
+        // Compares today against the last day you actually opened the app
+        // (not every reload — only when the calendar day has changed), so the
+        // Dashboard can show "since Tuesday: +$X income, -$Y spent" instead of
+        // making you go hunt through Ledger for what happened.
+        try{
+          const todayStr=new Date().toISOString().slice(0,10);
+          const finalRates=fx||DEFAULT_RATES;
+          const finalBp=price||null;
+          const currentNW=netWorth(finalWallets,finalBp,finalRates);
+          const lastVisitSetting=settingsData&&settingsData.find(s=>s.key==="last_visit");
+          if(lastVisitSetting){
+            let old={};
+            try{ old=JSON.parse(lastVisitSetting.value)||{}; }catch{}
+            if(old.date&&old.date<todayStr){
+              const incomeSinceUSD=finalLedger.filter(e=>e.type==="income"&&e.date>old.date).reduce((s,e)=>s+toUSD(e.amount,e.currency,finalRates,finalBp),0);
+              const expenseSinceUSD=finalLedger.filter(e=>e.type==="expense"&&e.date>old.date).reduce((s,e)=>s+toUSD(e.amount,e.currency,finalRates,finalBp),0);
+              const nwChange=old.netWorth!=null?currentNW-old.netWorth:null;
+              const btcChangePct=(old.btcPrice&&finalBp)?((finalBp-old.btcPrice)/old.btcPrice*100):null;
+              setLastVisitBanner({sinceDate:old.date,incomeSinceUSD,expenseSinceUSD,nwChange,btcChangePct});
+            }
+            if(!old.date||old.date<todayStr){
+              await saveSetting("last_visit",JSON.stringify({date:todayStr,netWorth:currentNW,btcPrice:finalBp}));
+            }
+          }else{
+            await saveSetting("last_visit",JSON.stringify({date:todayStr,netWorth:currentNW,btcPrice:finalBp}));
+          }
+        }catch(lvErr){ console.error("Since-last-checked calc error:",lvErr); }
+
         setSyncError(false);
       }catch(e){console.error("Supabase load error:",e);setSyncError(true);}
       setDbLoading(false);
@@ -3111,7 +3247,7 @@ export default function App(){
   }
 
   const autoCostBasis = computeAvgCostBasis(ledger, btcCostBasis);
-  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,lastReconciled,netWorthTarget};
+  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,lastReconciled,netWorthTarget,lastVisitBanner:bannerDismissed?null:lastVisitBanner};
   const nw=netWorth(wallets,btcPrice,rates);
 
   if(dbLoading)return(
@@ -3197,7 +3333,7 @@ export default function App(){
       )}
 
       <div style={{maxWidth:1200,margin:"0 auto"}}>
-        {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice}/>}
+        {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice} onDismissBanner={()=>setBannerDismissed(true)}/>}
         {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry} onBulkRecategorize={bulkRecategorize}/>}
         {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
