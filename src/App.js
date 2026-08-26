@@ -42,8 +42,8 @@ function resolveTag(rawTag,category){
 }
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTH_KEYS   = ["01","02","03","04","05","06","07","08","09","10","11","12"];
-const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","Inventory","AI Chat"];
-const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","⬡","✦"];
+const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","Inventory"];
+const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","⬡"];
 const HISTORICAL = {
   "2026-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:645.35,Dating:232.24,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
   "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:145.35,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:0,Family:7.97,"Debt Repayment":0}},
@@ -2198,7 +2198,7 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
   }
 
   return(
-    <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 120px)",padding:"0 16px 16px"}}>
+    <div style={{display:"flex",flexDirection:"column",height:"100%",padding:"0 16px 16px"}}>
       <div ref={scrollRef} style={{flex:1,overflowY:"auto",paddingTop:16,paddingBottom:8}}>
         {msgs.map((m,i)=>(
           <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:12}}>
@@ -2833,6 +2833,7 @@ export default function App(){
   const[netWorthTarget,setNetWorthTarget]=useState(100000);
   const[lastVisitBanner,setLastVisitBanner]=useState(null);
   const[bannerDismissed,setBannerDismissed]=useState(false);
+  const[chatOpen,setChatOpen]=useState(false);
   const showToast=msg=>setToast(msg);
 
   function tryUnlock(){
@@ -3341,8 +3342,27 @@ export default function App(){
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} onAddSupply={addSupply} onRestockSupply={restockSupply} onDeleteSupply={deleteSupply}/>}
         {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
-        {view==="AI Chat"  &&<AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>}
       </div>
+
+      {/* ── Floating AI Chat widget — bubble instead of a full tab ── */}
+      {chatOpen&&(
+        <div style={{position:"fixed",bottom:88,right:20,width:"min(400px, calc(100vw - 32px))",height:"min(620px, calc(100vh - 140px))",background:T.bg,border:`1px solid ${T.border}`,borderRadius:14,boxShadow:"0 12px 40px rgba(0,0,0,0.22)",zIndex:250,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:`1px solid ${T.border}`,background:T.white,flexShrink:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{width:22,height:22,borderRadius:"50%",background:T.text,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff",fontFamily:T.sans,fontWeight:700}}>AI</span>
+              <span style={{fontSize:13,fontWeight:700,color:T.text,fontFamily:T.sans}}>Financial Assistant</span>
+            </div>
+            <button onClick={()=>setChatOpen(false)} style={{background:"none",border:"none",color:T.textD,fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
+          </div>
+          <div style={{flex:1,minHeight:0}}>
+            <AIChat st={st} bp={btcPrice} onTransactions={applyTransactions} onBTCFetch={handleBTCFetch} btcLoading={btcLoading}/>
+          </div>
+        </div>
+      )}
+      <button onClick={()=>setChatOpen(v=>!v)}
+        style={{position:"fixed",bottom:20,right:20,width:56,height:56,borderRadius:"50%",background:T.text,border:"none",color:"#fff",fontSize:22,cursor:"pointer",boxShadow:"0 6px 20px rgba(0,0,0,0.25)",zIndex:251,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        {chatOpen?"×":"✦"}
+      </button>
 
       {toast&&<Toast msg={toast} onDone={()=>setToast(null)}/>}
     </div>
