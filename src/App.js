@@ -291,6 +291,20 @@ function Dashboard({st,bp,onDismissBanner}){
     return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],net:Math.round(m.net),income:Math.round(m.inc),cost:Math.round(m.cost)};
   });
 
+  // ── Cumulative net worth trajectory — the actual curve, not just monthly flow ──
+  // Reconstructed by working backwards from current net worth using each month's
+  // real net income (same method the Calendar trajectory chart uses), so the
+  // sparkline shows what net worth has actually been doing, not a proxy for it.
+  const sixMonthNetSum=nwTrend.reduce((s,m)=>s+m.net,0);
+  const startingNW=nw-sixMonthNetSum;
+  let runningNW=startingNW;
+  const nwCumulativeTrend=nwTrend.map(m=>{
+    runningNW+=m.net;
+    return{month:m.month,nw:Math.round(runningNW)};
+  });
+  const trendStart=nwCumulativeTrend[0]?.nw||0;
+  const trendEnd=nwCumulativeTrend[nwCumulativeTrend.length-1]?.nw||0;
+
   // ── Compounding rate — the perpetual metric, not a finish line ──
   // Trailing average monthly net (income − expense) as a % of current net worth,
   // then Rule of 72 to translate that into "months to double at this pace."
@@ -382,15 +396,19 @@ function Dashboard({st,bp,onDismissBanner}){
             </div>
           </div>
  
-          {/* Net worth trend sparkline */}
+          {/* Net worth trend sparkline — cumulative trajectory, not just monthly flow */}
           <div style={{width:220,flexShrink:0}}>
-            <div style={{fontSize:10,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:6,fontFamily:T.mono,textAlign:"right"}}>6-Month Net Trend</div>
+            <div style={{fontSize:10,color:T.textD,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:6,fontFamily:T.mono,textAlign:"right"}}>6-Month Net Worth</div>
             <ResponsiveContainer width="100%" height={64}>
-              <AreaChart data={nwTrend}>
+              <AreaChart data={nwCumulativeTrend}>
                 <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={T.blue} stopOpacity={0.15}/><stop offset="95%" stopColor={T.blue} stopOpacity={0}/></linearGradient></defs>
-                <Area type="monotone" dataKey="net" stroke={T.blue} strokeWidth={1.75} fill="url(#nwg)" dot={false}/>
+                <Area type="monotone" dataKey="nw" stroke={T.blue} strokeWidth={1.75} fill="url(#nwg)" dot={false}/>
               </AreaChart>
             </ResponsiveContainer>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:2}}>
+              <span>{cu(trendStart,0)}</span>
+              <span style={{color:trendEnd>=trendStart?T.green:T.red,fontWeight:600}}>→ {cu(trendEnd,0)}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1179,13 +1197,51 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
     const sale=parseFloat(o.saleBTC||o.salePrice||0);
     const profit=sale-cost;
     const profitUSD=currency==="BTC"?profit*(bp||0):profit;
+    const saleUSD=currency==="BTC"?sale*(bp||0):sale;
     const margin=sale>0?profit/sale:0;
-    return{currency,cost,sale,profit,profitUSD,margin};
+    return{currency,cost,sale,profit,profitUSD,saleUSD,margin};
   }
   function fmtAmt(n,currency){
     if(currency==="USDT") return "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
     return Number(n||0).toFixed(6)+" ₿";
   }
+
+  // ── Customer & order analytics — dropshipping-focused trends over last 6 months ──
+  // A customer's "first" order (chronologically, across ALL their orders) marks
+  // their acquisition — every order after that counts as returning behavior.
+  const firstOrderIds=(()=>{
+    const byCustomer={};
+    orders.forEach(o=>{
+      const n=normalizeName(o.client);
+      if(!n)return;
+      if(!byCustomer[n])byCustomer[n]=[];
+      byCustomer[n].push(o);
+    });
+    const ids=new Set();
+    Object.values(byCustomer).forEach(list=>{
+      const sorted=[...list].sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+      if(sorted[0])ids.add(sorted[0].id);
+    });
+    return ids;
+  })();
+  const TICKET_THRESHOLD=600;
+  const last6Months=Array.from({length:6},(_,i)=>{
+    const d=new Date();
+    d.setMonth(d.getMonth()-(5-i));
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  });
+  const monthlyOrderTrend=last6Months.map(ym=>{
+    const monthOrders=orders.filter(o=>o.date?.startsWith(ym));
+    const newCount=monthOrders.filter(o=>firstOrderIds.has(o.id)).length;
+    const returningCount=monthOrders.length-newCount;
+    const small=monthOrders.filter(o=>orderStats(o).saleUSD<TICKET_THRESHOLD).length;
+    const big=monthOrders.length-small;
+    const totalSaleUSD=monthOrders.reduce((s,o)=>s+orderStats(o).saleUSD,0);
+    const avgTicket=monthOrders.length>0?totalSaleUSD/monthOrders.length:0;
+    const newPct=monthOrders.length>0?(newCount/monthOrders.length*100):0;
+    return{month:MONTHS_SHORT[parseInt(ym.split("-")[1])-1],ym,total:monthOrders.length,new:newCount,returning:returningCount,small,big,avgTicket,newPct};
+  });
+  const hasOrderHistory=monthlyOrderTrend.some(m=>m.total>0);
 
   // ── Period filter ──
   function inPeriod(dateStr){
@@ -1282,6 +1338,78 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
         <Metric label="Pending" value={pending} color={T.red} sub={`${done} delivered`}/>
         <Metric label="Repeat Customers" value={Object.values(customerCounts).filter(c=>c>1).length} color={T.purple} sub={`of ${Object.keys(customerCounts).length} total`}/>
       </div>
+
+      {/* Customer & Order Trends — dropshipping business behavior over last 6 months */}
+      {hasOrderHistory&&(
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+            <Card>
+              <CardHeader title="New vs Returning Customers"/>
+              <div style={{padding:"12px 0 8px"}}>
+                <ResponsiveContainer width="100%" height={170}>
+                  <BarChart data={monthlyOrderTrend} barGap={3}>
+                    <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                    <Tooltip content={<CustomTooltip/>}/>
+                    <Bar dataKey="new" stackId="cust" fill={T.green} fillOpacity={0.75} radius={[0,0,0,0]} name="New"/>
+                    <Bar dataKey="returning" stackId="cust" fill={T.purple} fillOpacity={0.75} radius={[3,3,0,0]} name="Returning"/>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{padding:"0 20px 14px",display:"flex",gap:16}}>
+                <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:T.green}}/>New</span>
+                <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:T.purple}}/>Returning</span>
+              </div>
+            </Card>
+            <Card>
+              <CardHeader title={`Ticket Size — Small (<$${TICKET_THRESHOLD}) vs Big`}/>
+              <div style={{padding:"12px 0 8px"}}>
+                <ResponsiveContainer width="100%" height={170}>
+                  <BarChart data={monthlyOrderTrend} barGap={3}>
+                    <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
+                    <Tooltip content={<CustomTooltip/>}/>
+                    <Bar dataKey="small" stackId="ticket" fill={T.gold} fillOpacity={0.75} radius={[0,0,0,0]} name="Small"/>
+                    <Bar dataKey="big" stackId="ticket" fill={T.blue} fillOpacity={0.75} radius={[3,3,0,0]} name="Big"/>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{padding:"0 20px 14px",display:"flex",gap:16}}>
+                <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:T.gold}}/>Small (&lt;${TICKET_THRESHOLD})</span>
+                <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:T.blue}}/>Big (≥${TICKET_THRESHOLD})</span>
+              </div>
+            </Card>
+          </div>
+
+          <Card style={{marginBottom:16,overflowX:"auto"}}>
+            <CardHeader title="Monthly Comparison"/>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:T.mono,minWidth:680}}>
+                <thead><tr>
+                  <th style={{textAlign:"left",padding:"9px 16px",color:T.textM,fontSize:10,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"}}>Month</th>
+                  {["Orders","New","Returning","New %","Small","Big","Avg Ticket"].map(h=>(
+                    <th key={h} style={{textAlign:"right",padding:"9px 12px",color:T.textM,fontSize:10,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC",whiteSpace:"nowrap"}}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {monthlyOrderTrend.map(m=>(
+                    <tr key={m.ym} style={{borderBottom:`1px solid #F9FAFB`,opacity:m.total>0?1:0.35}}>
+                      <td style={{padding:"9px 16px",color:T.textS,fontWeight:500}}>{m.month}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:T.textM}}>{m.total||"—"}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:T.green}}>{m.total>0?m.new:"—"}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:T.purple}}>{m.total>0?m.returning:"—"}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:m.newPct>=50?T.green:T.gold,fontWeight:600}}>{m.total>0?`${m.newPct.toFixed(0)}%`:"—"}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:T.gold}}>{m.total>0?m.small:"—"}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:T.blue}}>{m.total>0?m.big:"—"}</td>
+                      <td style={{padding:"9px 12px",textAlign:"right",color:T.text,fontWeight:600}}>{m.total>0?cu(m.avgTicket):"—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
 
       {/* Top vendors this period */}
       {topVendors.length>0&&(
@@ -2529,21 +2657,25 @@ function SupplyTracker({supplies,onAdd,onRestock,onDelete,onToggleInUse,rates}){
 
 // BUDGET FUNCTION
 
-function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSupply,onDeleteSupply}){
+function Budget({st,bp,budgets,onSaveBudgets,supplies,planned,onAddPlanned,onTogglePlanned,onDeletePlanned}){
   const{ledger,rates}=st;
   const[editing,setEditing]=useState(false);
   const defaultAmounts={Dad:2250000,Mom:750000,Sam:750000,Glenn:750000,Personal:1500000,Dating:1500000,Gas:750000,Gear:2250000,Groceries:1500000,Miscellaneous:750000,Family:1500000,"Debt Repayment":2250000};
   const[draftAmounts,setDraftAmounts]=useState(budgets.amounts||defaultAmounts);
-  const[wishlist,setWishlist]=useState([]);
-  const[showWishForm,setShowWishForm]=useState(false);
-  const[wishForm,setWishForm]=useState({name:"",amountIDR:"",targetMonth:new Date().toISOString().slice(0,7),priority:"want",note:""});
   const[selectedMonth,setSelectedMonth]=useState(new Date().toISOString().slice(0,7));
+  const rolloverEnabled=budgets.rolloverEnabled||{};
+  function toggleCatRollover(cat){
+    const updated={...rolloverEnabled,[cat]:rolloverEnabled[cat]===false?true:false};
+    onSaveBudgets({amounts,rolloverEnabled:updated});
+  }
+  const[addingTo,setAddingTo]=useState(null); // category name currently showing its "+ plan a purchase" mini-form
+  const[planName,setPlanName]=useState("");
+  const[planAmount,setPlanAmount]=useState("");
 
   const amounts=budgets.amounts||draftAmounts;
   const budgetTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(amounts[c])||0),0);
-  const budgetTotalUSD=budgetTotalIDR/(rates.USDIDR||16200);
+  const draftTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(draftAmounts[c])||0),0);
 
-  const[rolloverOn,setRolloverOn]=useState(true);
   const thisM=selectedMonth;
   const isCurrentMonthSelected=thisM===new Date().toISOString().slice(0,7);
   const daysInSelMonth=new Date(parseInt(thisM.split("-")[0]),parseInt(thisM.split("-")[1]),0).getDate();
@@ -2556,35 +2688,33 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
   const md=buildMonth(thisM,ledger,bp,rates);
   const spentTotalUSD=md.cost;
   const spentTotalIDR=spentTotalUSD*(rates.USDIDR||16200);
-  const remainingIDR=budgetTotalIDR-spentTotalIDR;
-  const overallPct=budgetTotalIDR>0?spentTotalIDR/budgetTotalIDR:0;
-
-  const monthWishlist=wishlist.filter(w=>w.targetMonth===thisM&&!w.purchased);
-  const wishTotalIDR=monthWishlist.reduce((s,w)=>s+(parseFloat(w.amountIDR)||0),0);
-  const wishTotalUSD=wishTotalIDR/(rates.USDIDR||16200);
-
-  const grandTotalIDR=budgetTotalIDR+wishTotalIDR;
   const projectedIncome=md.inc;
-  const canAfford=projectedIncome>=(spentTotalUSD+wishTotalUSD);
 
-  const draftTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(draftAmounts[c])||0),0);
+  // Planned items are NOT month-scoped — they're just "things I'm currently
+  // planning to buy" per category, and disappear (via the ✓ toggle) once you
+  // actually buy them and log the real expense. Simple running want-list,
+  // not a separate wishlist system with its own dates and priorities.
+  const plannedByCategory={};
+  EXPENSE_CATS.forEach(c=>{plannedByCategory[c]=(planned||[]).filter(p=>p.category===c&&!p.purchased);});
+  const plannedTotalIDR=(planned||[]).filter(p=>!p.purchased).reduce((s,p)=>s+(parseFloat(p.amountIDR)||0),0);
+  const plannedTotalUSD=plannedTotalIDR/(rates.USDIDR||16200);
+
+  const remainingIDR=budgetTotalIDR-spentTotalIDR-plannedTotalIDR;
+  const overallPct=budgetTotalIDR>0?(spentTotalIDR+plannedTotalIDR)/budgetTotalIDR:0;
+  const canAfford=projectedIncome>=(spentTotalUSD+plannedTotalUSD);
 
   function saveEdit(){
     onSaveBudgets({amounts:draftAmounts});
     setEditing(false);
   }
-
-  function addWish(){
-    if(!wishForm.name||!wishForm.amountIDR)return;
-    setWishlist(wl=>[...wl,{id:Date.now(),name:wishForm.name,amountIDR:parseFloat(wishForm.amountIDR),targetMonth:wishForm.targetMonth,priority:wishForm.priority,note:wishForm.note,purchased:false}]);
-    setShowWishForm(false);
-    setWishForm({name:"",amountIDR:"",targetMonth:new Date().toISOString().slice(0,7),priority:"want",note:""});
+  function submitPlan(cat){
+    if(!planName.trim()||!planAmount)return;
+    onAddPlanned({category:cat,name:planName.trim(),amountIDR:parseFloat(planAmount)||0});
+    setPlanName("");setPlanAmount("");setAddingTo(null);
   }
+  function statusColor(pct){if(pct>=1)return T.red;if(pct>=0.8)return T.gold;return T.green;}
 
-  function statusColor(p){return p>=1?T.red:p>=0.8?T.gold:T.green;}
-
-  const inp={background:"#fff",border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
-  const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
 
   const today=new Date();
   const nextM=new Date();nextM.setMonth(nextM.getMonth()+1);
@@ -2614,25 +2744,28 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
         </div>
       </div>
 
-      {/* Overall budget */}
+      {/* Overall summary — one honest number, spent + planned vs cap */}
       <Card style={{marginBottom:16}}>
         <div style={{padding:"20px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:16}}>
             <div>
               <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Monthly Budget Cap {editing&&<span style={{color:T.textD,fontWeight:400}}>· sum of categories below</span>}</div>
-              <div>
-                <div style={{fontSize:32,fontWeight:800,color:T.text,fontFamily:T.sans,letterSpacing:"-0.02em"}}>{cid(editing?draftTotalIDR:budgetTotalIDR)}</div>
-                <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu((editing?draftTotalIDR:budgetTotalIDR)/(rates.USDIDR||16200))} USD</div>
-              </div>
+              <div style={{fontSize:32,fontWeight:800,color:T.text,fontFamily:T.sans,letterSpacing:"-0.02em"}}>{cid(editing?draftTotalIDR:budgetTotalIDR)}</div>
+              <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu((editing?draftTotalIDR:budgetTotalIDR)/(rates.USDIDR||16200))} USD</div>
             </div>
             <div style={{textAlign:"right"}}>
-              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Spent So Far</div>
-              <div style={{fontSize:24,fontWeight:700,color:statusColor(overallPct),fontFamily:T.sans}}>{cid(spentTotalIDR)}</div>
-              <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cu(spentTotalUSD)} · {(overallPct*100).toFixed(0)}% used</div>
+              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.14em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:6}}>Spent + Planned</div>
+              <div style={{fontSize:24,fontWeight:700,color:statusColor(overallPct),fontFamily:T.sans}}>{cid(spentTotalIDR+plannedTotalIDR)}</div>
+              <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginTop:4}}>{cid(spentTotalIDR)} spent · {cid(plannedTotalIDR)} planned</div>
             </div>
           </div>
-          <div style={{height:8,background:"#F3F4F6",borderRadius:4,overflow:"hidden",marginBottom:10}}>
-            <div style={{height:8,background:statusColor(overallPct),borderRadius:4,width:Math.min(100,overallPct*100)+"%",transition:"width 0.3s"}}/>
+          <div style={{height:8,background:"#F3F4F6",borderRadius:4,overflow:"hidden",marginBottom:4,display:"flex"}}>
+            <div style={{height:8,background:statusColor(overallPct),width:budgetTotalIDR>0?Math.min(100,spentTotalIDR/budgetTotalIDR*100)+"%":"0%"}}/>
+            <div style={{height:8,background:statusColor(overallPct),opacity:0.4,width:budgetTotalIDR>0?Math.min(100-Math.min(100,spentTotalIDR/budgetTotalIDR*100),plannedTotalIDR/budgetTotalIDR*100)+"%":"0%"}}/>
+          </div>
+          <div style={{display:"flex",gap:14,fontSize:10,color:T.textD,fontFamily:T.mono,marginBottom:14}}>
+            <span style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:statusColor(overallPct)}}/>Spent</span>
+            <span style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:2,background:statusColor(overallPct),opacity:0.4}}/>Planned</span>
           </div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{fontSize:12,color:remainingIDR>=0?T.green:T.red,fontWeight:600,fontFamily:T.mono}}>
@@ -2643,39 +2776,38 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
               {editing?"Save":"Edit Budget"}
             </button>
           </div>
+          {!canAfford&&(
+            <div style={{marginTop:12,background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:6,padding:"10px 14px",fontSize:11,color:T.red,fontFamily:T.mono}}>
+              ⚠ Projected income ({cu(projectedIncome)}) won't cover spent + planned ({cu(spentTotalUSD+plannedTotalUSD)}) this month.
+            </div>
+          )}
         </div>
       </Card>
 
-      {/* Category breakdown — nominal IDR per category */}
-      <Card style={{marginBottom:16}}>
-        <CardHeader title={editing?"Set Amount Per Category (IDR)":"Category Budget Breakdown"}
-          action={!editing&&(
-            <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
-              <span style={{fontSize:10,color:T.textM,fontFamily:T.mono,letterSpacing:"0.06em"}}>Rollover unused budget</span>
-              <div onClick={()=>setRolloverOn(v=>!v)} style={{width:32,height:18,borderRadius:9,background:rolloverOn?T.text:T.border,position:"relative",transition:"background 0.2s"}}>
-                <div style={{width:14,height:14,borderRadius:"50%",background:"#fff",position:"absolute",top:2,left:rolloverOn?16:2,transition:"left 0.2s",boxShadow:"0 1px 2px rgba(0,0,0,0.2)"}}/>
-              </div>
-            </label>
-          )}
-        />
+      {/* Category breakdown — spent + planned, side by side, per category */}
+      <Card>
+        <CardHeader title={editing?"Set Amount Per Category (IDR)":"Category Breakdown"}/>
         <div style={{padding:"8px 0"}}>
           {EXPENSE_CATS.map(cat=>{
             const baseBudgetIDR=parseFloat(amounts[cat])||0;
-            const catPctOfTotal=budgetTotalIDR>0?(baseBudgetIDR/budgetTotalIDR*100):0;
+            const catRolloverOn=rolloverEnabled[cat]!==false;
             const prevSpentIDR=(prevMd.cats[cat]||0)*(rates.USDIDR||16200);
-            const rolloverIDR=rolloverOn?Math.max(0,baseBudgetIDR-prevSpentIDR):0;
+            const rolloverIDR=catRolloverOn?Math.max(0,baseBudgetIDR-prevSpentIDR):0;
             const catBudgetIDR=baseBudgetIDR+rolloverIDR;
-            const catBudgetUSD=catBudgetIDR/(rates.USDIDR||16200);
             const spentUSD=md.cats[cat]||0;
             const spentIDR=spentUSD*(rates.USDIDR||16200);
-            const remainIDR=catBudgetIDR-spentIDR;
-            const catSpentPct=catBudgetIDR>0?spentIDR/catBudgetIDR:0;
-            const isOver=catSpentPct>=1;
-            const isClose=catSpentPct>=0.8&&catSpentPct<1;
+            const catPlannedIDR=plannedByCategory[cat].reduce((s,p)=>s+(parseFloat(p.amountIDR)||0),0);
+            const combinedIDR=spentIDR+catPlannedIDR;
+            const remainIDR=catBudgetIDR-combinedIDR;
+            const catPct=catBudgetIDR>0?combinedIDR/catBudgetIDR:0;
+            const spentPct=catBudgetIDR>0?Math.min(100,spentIDR/catBudgetIDR*100):0;
+            const plannedPct=catBudgetIDR>0?Math.min(100-spentPct,catPlannedIDR/catBudgetIDR*100):0;
+            const isOver=catPct>=1;
+            const isClose=catPct>=0.8&&catPct<1;
             const dailyAvgIDR=daysElapsedSel>0?spentIDR/daysElapsedSel:0;
             const projectedEOMIDR=dailyAvgIDR*daysInSelMonth;
-            const willExceed=isCurrentMonthSelected&&catBudgetIDR>0&&!isOver&&projectedEOMIDR>catBudgetIDR&&dailyAvgIDR>0;
-            const overageDay=willExceed?Math.ceil(catBudgetIDR/dailyAvgIDR):null;
+            const willExceed=isCurrentMonthSelected&&catBudgetIDR>0&&!isOver&&projectedEOMIDR+catPlannedIDR>catBudgetIDR&&dailyAvgIDR>0;
+            const catPctOfTotal=budgetTotalIDR>0?(baseBudgetIDR/budgetTotalIDR*100):0;
             return(
               <div key={cat} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:baseBudgetIDR>0?6:0}}>
@@ -2684,6 +2816,15 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
                     {isOver&&<span style={{background:"#FEE2E2",color:T.red,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>OVER</span>}
                     {isClose&&!isOver&&<span style={{background:"#FEF3C7",color:T.gold,fontSize:9,fontWeight:700,letterSpacing:"0.1em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>CLOSE</span>}
                     {rolloverIDR>0&&!editing&&<span style={{background:"#EFF6FF",color:T.blue,fontSize:9,fontWeight:700,letterSpacing:"0.06em",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>+{cid(rolloverIDR)} rollover</span>}
+                    {!editing&&(
+                      <button onClick={()=>toggleCatRollover(cat)} title={catRolloverOn?"Rollover on — click to disable":"Rollover off — click to enable"}
+                        style={{display:"flex",alignItems:"center",gap:4,background:"none",border:"none",cursor:"pointer",padding:0}}>
+                        <div style={{width:22,height:13,borderRadius:7,background:catRolloverOn?T.text:T.border,position:"relative",transition:"background 0.2s"}}>
+                          <div style={{width:9,height:9,borderRadius:"50%",background:"#fff",position:"absolute",top:2,left:catRolloverOn?11:2,transition:"left 0.2s",boxShadow:"0 1px 2px rgba(0,0,0,0.2)"}}/>
+                        </div>
+                        <span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>rollover</span>
+                      </button>
+                    )}
                   </div>
                   {editing?(
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
@@ -2693,23 +2834,27 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
                       <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,minWidth:32}}>{draftTotalIDR>0?((parseFloat(draftAmounts[cat])||0)/draftTotalIDR*100).toFixed(0):0}%</span>
                     </div>
                   ):(
-                    <div style={{textAlign:"right"}}>
-                      <span style={{fontSize:12,color:T.textM,fontFamily:T.mono,fontWeight:500}}>{cid(baseBudgetIDR)} · {catPctOfTotal.toFixed(0)}%</span>
-                    </div>
+                    <span style={{fontSize:12,color:T.textM,fontFamily:T.mono,fontWeight:500}}>{cid(baseBudgetIDR)} · {catPctOfTotal.toFixed(0)}%</span>
                   )}
                 </div>
+
                 {willExceed&&(
                   <div style={{fontSize:10,color:T.gold,fontFamily:T.mono,marginBottom:5,display:"flex",alignItems:"center",gap:5}}>
-                    <span>⚠</span> At current pace, will exceed budget around day {overageDay} of {daysInSelMonth}
+                    <span>⚠</span> At current pace + planned items, will exceed budget
                   </div>
                 )}
+
                 {baseBudgetIDR>0&&!editing&&(
                   <>
-                    <div style={{height:4,background:"#F3F4F6",borderRadius:2,overflow:"hidden",marginBottom:4}}>
-                      <div style={{height:4,background:statusColor(catSpentPct),borderRadius:2,width:Math.min(100,catSpentPct*100)+"%",transition:"width 0.3s"}}/>
+                    <div style={{height:5,background:"#F3F4F6",borderRadius:3,overflow:"hidden",marginBottom:4,display:"flex"}}>
+                      <div style={{height:5,background:statusColor(catPct)}}/>
                     </div>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,fontFamily:T.mono,color:T.textD}}>
-                      <span>Spent: {cid(spentIDR)} / {cid(catBudgetIDR)}</span>
+                    <div style={{height:5,background:"#F3F4F6",borderRadius:3,overflow:"hidden",marginBottom:4,display:"flex",marginTop:-5}}>
+                      <div style={{height:5,background:statusColor(catPct),width:spentPct+"%",flexShrink:0}}/>
+                      <div style={{height:5,background:statusColor(catPct),opacity:0.4,width:plannedPct+"%",flexShrink:0}}/>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,fontFamily:T.mono,color:T.textD,marginBottom:8}}>
+                      <span>Spent {cid(spentIDR)}{catPlannedIDR>0?` + Planned ${cid(catPlannedIDR)}`:""}</span>
                       <span style={{color:remainIDR>=0?T.green:T.red,fontWeight:600}}>
                         {remainIDR>=0?`${cid(remainIDR)} left`:`${cid(Math.abs(remainIDR))} over`}
                       </span>
@@ -2717,9 +2862,38 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
                   </>
                 )}
                 {baseBudgetIDR===0&&!editing&&(
-                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>
-                    {spentIDR>0?`Spent: ${cid(spentIDR)} — no cap set`:"No cap · no spending"}
+                  <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginBottom:8}}>
+                    {combinedIDR>0?`${cid(spentIDR)} spent, ${cid(catPlannedIDR)} planned — no cap set`:"No cap · nothing spent or planned"}
                   </div>
+                )}
+
+                {/* Planned items for this category — the wishlist, integrated */}
+                {!editing&&plannedByCategory[cat].length>0&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:6}}>
+                    {plannedByCategory[cat].map(p=>(
+                      <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#FAFBFC",border:`1px solid ${T.border}`,borderRadius:5,padding:"6px 10px"}}>
+                        <span style={{fontSize:11,color:T.textS,fontFamily:T.mono}}>{p.name}</span>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{fontSize:11,color:T.textM,fontFamily:T.mono,fontWeight:600}}>{cid(p.amountIDR)}</span>
+                          <button onClick={()=>onTogglePlanned(p)} title="Mark as bought" style={{background:"#F0FDF4",color:T.green,border:"1px solid #BBF7D0",borderRadius:4,padding:"3px 8px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:T.mono}}>✓ Bought</button>
+                          <button onClick={()=>onDeletePlanned(p.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:13}}>×</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!editing&&(
+                  addingTo===cat?(
+                    <div style={{display:"flex",gap:6,alignItems:"center",marginTop:4}}>
+                      <input value={planName} onChange={e=>setPlanName(e.target.value)} placeholder="What are you planning to buy?" style={{...inp,flex:2}} autoFocus/>
+                      <input type="number" value={planAmount} onChange={e=>setPlanAmount(e.target.value)} placeholder="Rp amount" style={{...inp,flex:1}}/>
+                      <button onClick={()=>submitPlan(cat)} disabled={!planName.trim()||!planAmount} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"7px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,whiteSpace:"nowrap"}}>Add</button>
+                      <button onClick={()=>{setAddingTo(null);setPlanName("");setPlanAmount("");}} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14}}>×</button>
+                    </div>
+                  ):(
+                    <button onClick={()=>setAddingTo(cat)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:10,fontFamily:T.mono,letterSpacing:"0.04em",padding:"2px 0"}}>+ plan a purchase</button>
+                  )
                 )}
               </div>
             );
@@ -2734,113 +2908,6 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,onAddSupply,onRestockSuppl
           )}
         </div>
       </Card>
-
-      {/* Wishlist */}
-      <Card style={{marginBottom:16}}>
-        <CardHeader title={`Wishlist · ${MONTHS_SHORT[new Date(selectedMonth+"-01").getMonth()]}`}
-          action={<button onClick={()=>setShowWishForm(true)} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"5px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.08em",textTransform:"uppercase"}}>+ Add</button>}
-        />
-        {showWishForm&&(
-          <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"}}>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-              <div><label style={lbl}>Item / Activity</label><input value={wishForm.name} onChange={e=>setWishForm(f=>({...f,name:e.target.value}))} placeholder="e.g. New shoes, Bali trip" style={inp}/></div>
-              <div>
-                <label style={lbl}>Price (IDR)</label>
-                <input type="number" value={wishForm.amountIDR} onChange={e=>setWishForm(f=>({...f,amountIDR:e.target.value}))} placeholder="e.g. 2500000" style={inp}/>
-                {wishForm.amountIDR&&<div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>≈ {cu(parseFloat(wishForm.amountIDR)/(rates.USDIDR||16200))}</div>}
-              </div>
-              <div>
-                <label style={lbl}>Target Month</label>
-                <select value={wishForm.targetMonth} onChange={e=>setWishForm(f=>({...f,targetMonth:e.target.value}))} style={{...inp,cursor:"pointer"}}>
-                  {allMonths.map(m=>{const d=new Date(m+"-01");return<option key={m} value={m}>{MONTHS_SHORT[d.getMonth()]} {d.getFullYear()}</option>;})}
-                </select>
-              </div>
-              <div>
-                <label style={lbl}>Priority</label>
-                <select value={wishForm.priority} onChange={e=>setWishForm(f=>({...f,priority:e.target.value}))} style={{...inp,cursor:"pointer"}}>
-                  <option value="need">Need</option>
-                  <option value="want">Want</option>
-                  <option value="experience">Experience</option>
-                </select>
-              </div>
-            </div>
-            <div style={{marginBottom:12}}><label style={lbl}>Note</label><input value={wishForm.note} onChange={e=>setWishForm(f=>({...f,note:e.target.value}))} placeholder="Why do you want this?" style={inp}/></div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={addWish} disabled={!wishForm.name||!wishForm.amountIDR} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Add</button>
-              <button onClick={()=>setShowWishForm(false)} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:4,padding:"8px 14px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
-            </div>
-          </div>
-        )}
-        {monthWishlist.length===0&&!showWishForm&&(
-          <div style={{padding:"24px 20px",color:T.textD,fontSize:13,fontFamily:T.mono}}>No wishlist items for this month.</div>
-        )}
-        {monthWishlist.map(w=>{
-          const PRIORITY_COLOR={need:T.red,want:T.blue,experience:T.purple};
-          return(
-            <div key={w.id} style={{padding:"12px 20px",borderBottom:`1px solid #F9FAFB`,opacity:w.purchased?0.4:1}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
-                  <input type="checkbox" checked={w.purchased} onChange={()=>setWishlist(wl=>wl.map(x=>x.id===w.id?{...x,purchased:!x.purchased}:x))} style={{width:15,height:15,marginTop:2,cursor:"pointer",accentColor:T.text}}/>
-                  <div>
-                    <div style={{fontSize:13,color:w.purchased?"#9CA3AF":T.textS,fontWeight:500,textDecoration:w.purchased?"line-through":"none"}}>{w.name}</div>
-                    {w.note&&<div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{w.note}</div>}
-                    <span style={{display:"inline-block",background:PRIORITY_COLOR[w.priority]+"15",color:PRIORITY_COLOR[w.priority],border:`1px solid ${PRIORITY_COLOR[w.priority]}25`,borderRadius:3,padding:"1px 6px",fontSize:9,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",fontFamily:T.mono,marginTop:4}}>{w.priority}</span>
-                  </div>
-                </div>
-                <div style={{display:"flex",alignItems:"flex-start",gap:8,flexShrink:0,marginLeft:8}}>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:13,color:T.textS,fontWeight:700,fontFamily:T.mono}}>{cid(w.amountIDR)}</div>
-                    <div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{cu(w.amountIDR/(rates.USDIDR||16200))}</div>
-                  </div>
-                  <button onClick={()=>setWishlist(wl=>wl.filter(x=>x.id!==w.id))} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14,paddingTop:2}}>×</button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </Card>
-
-      {/* Grand total */}
-      <Card>
-        <CardHeader title="Budget + Wishlist Summary"/>
-        <div style={{padding:"20px"}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:0,marginBottom:20,border:`1px solid ${T.border}`,borderRadius:8,overflow:"hidden"}}>
-            <div style={{padding:"16px",borderRight:`1px solid ${T.border}`}}>
-              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Budget Cap</div>
-              <div style={{fontSize:18,fontWeight:700,color:T.text,fontFamily:T.sans}}>{cid(budgetTotalIDR)}</div>
-              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{cu(budgetTotalUSD)}</div>
-            </div>
-            <div style={{padding:"16px",borderRight:`1px solid ${T.border}`}}>
-              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Wishlist ({monthWishlist.length})</div>
-              <div style={{fontSize:18,fontWeight:700,color:T.purple,fontFamily:T.sans}}>{cid(wishTotalIDR)}</div>
-              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{cu(wishTotalUSD)}</div>
-            </div>
-            <div style={{padding:"16px"}}>
-              <div style={{fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",fontFamily:T.mono,marginBottom:6}}>Grand Total</div>
-              <div style={{fontSize:18,fontWeight:700,color:T.text,fontFamily:T.sans}}>{cid(grandTotalIDR)}</div>
-              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,marginTop:2}}>{cu(grandTotalIDR/(rates.USDIDR||16200))}</div>
-            </div>
-          </div>
-          <div style={{background:canAfford?"#F0FDF4":"#FEF2F2",border:`1px solid ${canAfford?"#BBF7D0":"#FECACA"}`,borderRadius:8,padding:"16px 20px"}}>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-              <span style={{fontSize:22}}>{canAfford?"✓":"⚠"}</span>
-              <div>
-                <div style={{fontSize:14,fontWeight:700,color:canAfford?T.green:T.red,fontFamily:T.sans}}>{canAfford?"You can afford everything":"Over projected income"}</div>
-                <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginTop:2}}>Income: {cu(projectedIncome)} · Needed: {cu(spentTotalUSD+wishTotalUSD)}</div>
-              </div>
-            </div>
-            <div style={{height:6,background:canAfford?"#BBF7D0":"#FECACA",borderRadius:3,overflow:"hidden"}}>
-              <div style={{height:6,background:canAfford?T.green:T.red,borderRadius:3,width:Math.min(100,((spentTotalUSD+wishTotalUSD)/Math.max(projectedIncome,spentTotalUSD+wishTotalUSD))*100)+"%"}}/>
-            </div>
-            <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginTop:6,textAlign:"right"}}>
-              {canAfford
-                ?`${cid((projectedIncome-spentTotalUSD-wishTotalUSD)*(rates.USDIDR||16200))} left after everything`
-                :`${cid((spentTotalUSD+wishTotalUSD-projectedIncome)*(rates.USDIDR||16200))} short`
-              }
-            </div>
-          </div>
-        </div>
-      </Card>
     </div>
   );
 }
@@ -2853,6 +2920,7 @@ export default function App(){
   const[orders,setOrders]=useState([]);
   const[budgets,setBudgets]=useState({});
   const[supplies,setSupplies]=useState([]);
+  const[planned,setPlanned]=useState([]);
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
   const[rates,setRates]=useState(DEFAULT_RATES);
   const[btcCostBasis,setBtcCostBasis]=useState(0);
@@ -2932,6 +3000,11 @@ export default function App(){
             runsOutOverride:s.runs_out_override||null,
           })));
         }catch(supErr){ console.error("Supplies load error (table may not exist yet):",supErr); }
+
+        try{
+          const plannedData=await sb("planned_items?order=created_at.desc");
+          if(plannedData)setPlanned(plannedData.map(p=>({...p,amountIDR:parseFloat(p.amount_idr)||0,purchased:p.purchased===true})));
+        }catch(planErr){ console.error("Planned items load error (table may not exist yet):",planErr); }
 
         const settingsData=await sb("settings");
         if(settingsData)settingsData.forEach(s=>{
@@ -3044,6 +3117,31 @@ export default function App(){
     setSupplies(s=>s.filter(x=>x.id!==id));
     try{ await sb(`supplies?id=eq.${id}`,"DELETE"); }
     catch(e){ console.error("Supply delete error:",e); }
+  }
+
+  async function addPlanned(item){
+    const tempId="tmp-"+Date.now();
+    setPlanned(p=>[{...item,id:tempId,purchased:false},...p]);
+    try{
+      const saved=await sb("planned_items","POST",{category:item.category,name:item.name,amount_idr:item.amountIDR,purchased:false});
+      const realId=saved?.[0]?.id;
+      if(realId) setPlanned(p=>p.map(x=>x.id===tempId?{...x,id:realId}:x));
+      showToast("✓ Added to plan");
+    }catch(e){ console.error("Add planned error:",e); showToast("⚠ Saved locally — Supabase error"); }
+  }
+
+  async function togglePlanned(item){
+    setPlanned(p=>p.map(x=>x.id===item.id?{...x,purchased:true}:x));
+    try{
+      await sb(`planned_items?id=eq.${item.id}`,"PATCH",{purchased:true});
+      showToast(`✓ ${item.name} marked as bought`);
+    }catch(e){ console.error("Toggle planned error:",e); }
+  }
+
+  async function deletePlanned(id){
+    setPlanned(p=>p.filter(x=>x.id!==id));
+    try{ await sb(`planned_items?id=eq.${id}`,"DELETE"); }
+    catch(e){ console.error("Delete planned error:",e); }
   }
 
   async function applyTransactions(txs){
@@ -3375,7 +3473,7 @@ export default function App(){
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
-        {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} onAddSupply={addSupply} onRestockSupply={restockSupply} onDeleteSupply={deleteSupply}/>}
+        {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} planned={planned} onAddPlanned={addPlanned} onTogglePlanned={togglePlanned} onDeletePlanned={deletePlanned}/>}
         {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
       </div>
 
