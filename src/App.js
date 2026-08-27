@@ -541,9 +541,9 @@ function Dashboard({st,bp,onDismissBanner}){
                   <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
                   <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
                   <Tooltip content={<CustomTooltip/>}/>
-                  <Bar dataKey="income" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
-                  <Bar dataKey="cost"   fill="#DC262618" stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Spend"/>
-                  <Bar dataKey="net"    fill="#1D4ED818" stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
+                  <Bar dataKey="income" fill={T.green} fillOpacity={0.15} stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
+                  <Bar dataKey="cost"   fill={T.red} fillOpacity={0.15} stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Spend"/>
+                  <Bar dataKey="net"    fill={T.blue} fillOpacity={0.15} stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -1053,8 +1053,8 @@ function CalendarView({st,bp,onSaveTarget}){
               <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
               <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
               <Tooltip content={<CustomTooltip/>}/>
-              <Bar dataKey="actual" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Actual Net Worth"/>
-              <Bar dataKey="required" fill="#9CA3AF10" stroke={T.textD} strokeWidth={1} strokeDasharray="3 3" radius={[3,3,0,0]} name="Required Pace"/>
+              <Bar dataKey="actual" fill={T.green} fillOpacity={0.15} stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Actual Net Worth"/>
+              <Bar dataKey="required" fill={T.textD} fillOpacity={0.12} stroke={T.textD} strokeWidth={1} strokeDasharray="3 3" radius={[3,3,0,0]} name="Required Pace"/>
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1149,9 +1149,23 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
   const[newVendor,setNewVendor]=useState("");
   const[showVendorInput,setShowVendorInput]=useState(false);
   const[period,setPeriod]=useState("all"); // all | week | month | 90d
+  const[selectedMonth,setSelectedMonth]=useState(new Date().toISOString().slice(0,7));
   const[statusF,setStatusF]=useState("all"); // all | pending | delivered
   const[search,setSearch]=useState("");
   const[sortBy,setSortBy]=useState("date"); // date | profit | client
+
+  // Customer history — processed from ALL orders (not just the current filter view),
+  // so "returning" reflects the customer's real lifetime order count.
+  function normalizeName(n){ return (n||"").trim().toLowerCase(); }
+  const customerCounts=(()=>{
+    const counts={};
+    orders.forEach(o=>{
+      const n=normalizeName(o.client);
+      if(!n)return;
+      counts[n]=(counts[n]||0)+1;
+    });
+    return counts;
+  })();
 
   const emptyForm={vendor:vendors[0]||"Violet",client:"",platform:"",items:"",currency:"BTC",costBTC:"",saleBTC:"",date:new Date().toISOString().slice(0,10)};
   const[form,setForm]=useState(emptyForm);
@@ -1180,7 +1194,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
     const now=new Date();
     const diffDays=(now-d)/(1000*60*60*24);
     if(period==="week")return diffDays<=7;
-    if(period==="month")return diffDays<=30;
+    if(period==="month")return dateStr.slice(0,7)===selectedMonth; // specific calendar month, chosen from dropdown
     if(period==="90d")return diffDays<=90;
     return true;
   }
@@ -1249,7 +1263,12 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
   const sel={background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:6,padding:"7px 12px",fontSize:12,fontFamily:T.mono,outline:"none",cursor:"pointer"};
   const profitPreview=(parseFloat(form.saleBTC)||0)-(parseFloat(form.costBTC)||0);
 
-  const PERIODS=[["all","All time"],["week","This week"],["month","This month"],["90d","Last 90d"]];
+  const PERIODS=[["all","All time"],["week","This week"],["month","By month"],["90d","Last 90d"]];
+  const availableMonths=(()=>{
+    const fromOrders=orders.map(o=>o.date?.slice(0,7)).filter(Boolean);
+    const thisM=new Date().toISOString().slice(0,7);
+    return Array.from(new Set([thisM,...fromOrders])).sort().reverse();
+  })();
 
   return(
     <div style={{padding:"20px 16px"}}>
@@ -1261,6 +1280,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
         <Metric label="Combined Profit $" value={cu(totals.profitUSD)} color={T.purple}/>
         <Metric label="Avg Margin" value={cp(avgMargin)} color={T.gold}/>
         <Metric label="Pending" value={pending} color={T.red} sub={`${done} delivered`}/>
+        <Metric label="Repeat Customers" value={Object.values(customerCounts).filter(c=>c>1).length} color={T.purple} sub={`of ${Object.keys(customerCounts).length} total`}/>
       </div>
 
       {/* Top vendors this period */}
@@ -1322,6 +1342,12 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
             </div>
             <div><label style={lbl}>Customer</label>
               <input value={form.client} onChange={e=>setForm(f=>({...f,client:e.target.value}))} placeholder="e.g. Brooks" style={inp}/>
+              {form.client.trim()&&(()=>{
+                const cnt=customerCounts[normalizeName(form.client)]||0;
+                return cnt>0
+                  ?<div style={{fontSize:10,color:T.purple,marginTop:3,fontFamily:T.mono}}>↻ Returning customer — {cnt} previous order{cnt!==1?"s":""}</div>
+                  :<div style={{fontSize:10,color:T.green,marginTop:3,fontFamily:T.mono}}>✦ New customer</div>;
+              })()}
             </div>
             <div><label style={lbl}>Platform</label>
               <select value={form.platform} onChange={e=>setForm(f=>({...f,platform:e.target.value}))} style={{...inp,cursor:"pointer"}}>
@@ -1384,6 +1410,14 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
             </button>
           ))}
         </div>
+        {period==="month"&&(
+          <select value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)} style={sel}>
+            {availableMonths.map(m=>{
+              const d=new Date(m+"-01");
+              return<option key={m} value={m}>{MONTHS_SHORT[d.getMonth()]} {d.getFullYear()}</option>;
+            })}
+          </select>
+        )}
         <select value={statusF} onChange={e=>setStatusF(e.target.value)} style={sel}>
           <option value="all">All status</option>
           <option value="pending">Pending</option>
@@ -1419,6 +1453,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <span style={{fontSize:13,color:T.textS,fontWeight:600}}>{o.client}</span>
+                  {(()=>{const cnt=customerCounts[normalizeName(o.client)]||0;return cnt>1?<Badge color={T.purple}>Returning · {cnt}</Badge>:<Badge color={T.green}>New</Badge>;})()}
                   <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{o.vendor}</span>
                   <Badge color={s.currency==="USDT"?T.green:T.gold}>{s.currency}</Badge>
                   {o.platform&&<Badge color={T.blue}>{o.platform}</Badge>}
@@ -1719,9 +1754,9 @@ function Analytics({st,bp}){
               <XAxis dataKey="week" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
               <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false} tickFormatter={v=>"$"+v.toLocaleString()}/>
               <Tooltip content={<CustomTooltip/>}/>
-              <Bar dataKey="income" fill="#16A34A18" stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
-              <Bar dataKey="spend"  fill="#DC262618" stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Spend"/>
-              <Bar dataKey="net"    fill="#1D4ED818" stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
+              <Bar dataKey="income" fill={T.green} fillOpacity={0.15} stroke={T.green} strokeWidth={1.5} radius={[3,3,0,0]} name="Income"/>
+              <Bar dataKey="spend"  fill={T.red} fillOpacity={0.15} stroke={T.red}   strokeWidth={1.5} radius={[3,3,0,0]} name="Spend"/>
+              <Bar dataKey="net"    fill={T.blue} fillOpacity={0.15} stroke={T.blue}  strokeWidth={1.5} radius={[3,3,0,0]} name="Net"/>
             </BarChart>
           </ResponsiveContainer>
         </div>
