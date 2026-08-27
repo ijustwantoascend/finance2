@@ -1185,6 +1185,13 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
     return counts;
   })();
 
+  // Big-ticket orders — a single order at/over the threshold, regardless of that
+  // customer's other order history. Computed live from every order (old and new),
+  // so it applies to existing data automatically.
+  const VIP_THRESHOLD_USD=1000;
+  function isBigTicket(o){ return orderStats(o).saleUSD>=VIP_THRESHOLD_USD; }
+  const bigTicketOrders=orders.filter(o=>isBigTicket(o)).sort((a,b)=>orderStats(b).saleUSD-orderStats(a).saleUSD);
+
   const emptyForm={vendor:vendors[0]||"Violet",client:"",platform:"",items:"",currency:"BTC",costBTC:"",saleBTC:"",date:new Date().toISOString().slice(0,10)};
   const[form,setForm]=useState(emptyForm);
 
@@ -1337,6 +1344,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
         <Metric label="Avg Margin" value={cp(avgMargin)} color={T.gold}/>
         <Metric label="Pending" value={pending} color={T.red} sub={`${done} delivered`}/>
         <Metric label="Repeat Customers" value={Object.values(customerCounts).filter(c=>c>1).length} color={T.purple} sub={`of ${Object.keys(customerCounts).length} total`}/>
+        <Metric label="Big Ticket (≥$1000)" value={bigTicketOrders.length} color={T.gold} sub="need special assistance"/>
       </div>
 
       {/* Customer & Order Trends — dropshipping business behavior over last 6 months */}
@@ -1582,6 +1590,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <span style={{fontSize:13,color:T.textS,fontWeight:600}}>{o.client}</span>
                   {(()=>{const cnt=customerCounts[normalizeName(o.client)]||0;return cnt>1?<Badge color={T.purple}>Returning · {cnt}</Badge>:<Badge color={T.green}>New</Badge>;})()}
+                  {isBigTicket(o)&&<Badge color={T.gold}>★ Big Ticket</Badge>}
                   <span style={{fontSize:11,color:T.textD,fontFamily:T.mono}}>{o.vendor}</span>
                   <Badge color={s.currency==="USDT"?T.green:T.gold}>{s.currency}</Badge>
                   {o.platform&&<Badge color={T.blue}>{o.platform}</Badge>}
