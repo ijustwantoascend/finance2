@@ -244,12 +244,13 @@ function Pill({label,value,color=T.textS}){
     </div>
   );
 }
-const CustomTooltip=({active,payload,label})=>{
+const CustomTooltip=({active,payload,label,formatter})=>{
   if(!active||!payload?.length)return null;
+  const fmt=formatter||cu;
   return(
     <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 14px",boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
       <div style={{fontSize:11,color:T.textM,marginBottom:4,fontFamily:T.mono}}>{label}</div>
-      {payload.map((p,i)=><div key={i} style={{fontSize:12,color:p.color,fontWeight:600,fontFamily:T.mono}}>{p.name}: {cu(p.value)}</div>)}
+      {payload.map((p,i)=><div key={i} style={{fontSize:12,color:p.color,fontWeight:600,fontFamily:T.mono}}>{p.name}: {fmt(p.value)}</div>)}
     </div>
   );
 };
@@ -1358,7 +1359,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
                   <BarChart data={monthlyOrderTrend} barGap={3}>
                     <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
                     <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
-                    <Tooltip content={<CustomTooltip/>}/>
+                    <Tooltip content={<CustomTooltip formatter={v=>`${v} order${v!==1?"s":""}`}/>}/>
                     <Bar dataKey="new" stackId="cust" fill={T.green} fillOpacity={0.75} radius={[0,0,0,0]} name="New"/>
                     <Bar dataKey="returning" stackId="cust" fill={T.purple} fillOpacity={0.75} radius={[3,3,0,0]} name="Returning"/>
                   </BarChart>
@@ -1376,7 +1377,7 @@ function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
                   <BarChart data={monthlyOrderTrend} barGap={3}>
                     <XAxis dataKey="month" tick={{fill:T.textD,fontSize:11,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
                     <YAxis tick={{fill:T.textD,fontSize:10,fontFamily:"IBM Plex Mono"}} axisLine={false} tickLine={false}/>
-                    <Tooltip content={<CustomTooltip/>}/>
+                    <Tooltip content={<CustomTooltip formatter={v=>`${v} order${v!==1?"s":""}`}/>}/>
                     <Bar dataKey="small" stackId="ticket" fill={T.gold} fillOpacity={0.75} radius={[0,0,0,0]} name="Small"/>
                     <Bar dataKey="big" stackId="ticket" fill={T.blue} fillOpacity={0.75} radius={[3,3,0,0]} name="Big"/>
                   </BarChart>
