@@ -2671,23 +2671,38 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,planned,onAddPlanned,onTog
   const{ledger,rates}=st;
   const[editing,setEditing]=useState(false);
   const defaultAmounts={Dad:2250000,Mom:750000,Sam:750000,Glenn:750000,Personal:1500000,Dating:1500000,Gas:750000,Gear:2250000,Groceries:1500000,Miscellaneous:750000,Family:1500000,"Debt Repayment":2250000};
-  const[draftAmounts,setDraftAmounts]=useState(budgets.amounts||defaultAmounts);
   const[selectedMonth,setSelectedMonth]=useState(new Date().toISOString().slice(0,7));
+
+  // ── Month-aware budget amounts ──
+  // Each month can have its own caps. If a month was never explicitly set, it
+  // inherits the most recent month that WAS set (so you're not re-entering
+  // everything every month, but any month can be adjusted independently).
+  function getAmountsForMonth(ym){
+    const monthly=budgets.monthlyAmounts||{};
+    if(monthly[ym])return monthly[ym];
+    const priorKeys=Object.keys(monthly).filter(k=>k<=ym).sort();
+    if(priorKeys.length>0)return monthly[priorKeys[priorKeys.length-1]];
+    return defaultAmounts;
+  }
+  const amounts=getAmountsForMonth(selectedMonth);
+  const[draftAmounts,setDraftAmounts]=useState(amounts);
+
   const rolloverEnabled=budgets.rolloverEnabled||{};
   function toggleCatRollover(cat){
     const updated={...rolloverEnabled,[cat]:rolloverEnabled[cat]===false?true:false};
-    onSaveBudgets({amounts,rolloverEnabled:updated});
+    onSaveBudgets({...budgets,rolloverEnabled:updated});
   }
   const[addingTo,setAddingTo]=useState(null); // category name currently showing its "+ plan a purchase" mini-form
   const[planName,setPlanName]=useState("");
   const[planAmount,setPlanAmount]=useState("");
 
-  const amounts=budgets.amounts||draftAmounts;
   const budgetTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(amounts[c])||0),0);
   const draftTotalIDR=EXPENSE_CATS.reduce((s,c)=>s+(parseFloat(draftAmounts[c])||0),0);
 
   const thisM=selectedMonth;
-  const isCurrentMonthSelected=thisM===new Date().toISOString().slice(0,7);
+  const todayStr=new Date().toISOString().slice(0,7);
+  const isCurrentMonthSelected=thisM===todayStr;
+  const isFutureMonthSelected=thisM>todayStr;
   const daysInSelMonth=new Date(parseInt(thisM.split("-")[0]),parseInt(thisM.split("-")[1]),0).getDate();
   const daysElapsedSel=isCurrentMonthSelected?new Date().getDate():daysInSelMonth;
 
@@ -2700,26 +2715,34 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,planned,onAddPlanned,onTog
   const spentTotalIDR=spentTotalUSD*(rates.USDIDR||16200);
   const projectedIncome=md.inc;
 
-  // Planned items are NOT month-scoped — they're just "things I'm currently
-  // planning to buy" per category, and disappear (via the ✓ toggle) once you
-  // actually buy them and log the real expense. Simple running want-list,
-  // not a separate wishlist system with its own dates and priorities.
+  // Planned items now target a specific month — "I'm planning to buy this in
+  // September" — so each month's view only shows what's planned FOR that month,
+  // letting you plan ahead into future months as well as the current one.
   const plannedByCategory={};
-  EXPENSE_CATS.forEach(c=>{plannedByCategory[c]=(planned||[]).filter(p=>p.category===c&&!p.purchased);});
-  const plannedTotalIDR=(planned||[]).filter(p=>!p.purchased).reduce((s,p)=>s+(parseFloat(p.amountIDR)||0),0);
+  EXPENSE_CATS.forEach(c=>{
+    plannedByCategory[c]=(planned||[]).filter(p=>p.category===c&&!p.purchased&&(p.targetMonth||todayStr)===thisM);
+  });
+  const plannedTotalIDR=(planned||[]).filter(p=>!p.purchased&&(p.targetMonth||todayStr)===thisM).reduce((s,p)=>s+(parseFloat(p.amountIDR)||0),0);
   const plannedTotalUSD=plannedTotalIDR/(rates.USDIDR||16200);
 
   const remainingIDR=budgetTotalIDR-spentTotalIDR-plannedTotalIDR;
   const overallPct=budgetTotalIDR>0?(spentTotalIDR+plannedTotalIDR)/budgetTotalIDR:0;
-  const canAfford=projectedIncome>=(spentTotalUSD+plannedTotalUSD);
+  // Affordability only makes sense against a month with real income data —
+  // future months have no ledger history yet, so skip the warning there.
+  const canAfford=isFutureMonthSelected||projectedIncome>=(spentTotalUSD+plannedTotalUSD);
 
+  function startEditing(){
+    setDraftAmounts(getAmountsForMonth(selectedMonth));
+    setEditing(true);
+  }
   function saveEdit(){
-    onSaveBudgets({amounts:draftAmounts});
+    const updatedMonthly={...(budgets.monthlyAmounts||{}),[selectedMonth]:draftAmounts};
+    onSaveBudgets({...budgets,monthlyAmounts:updatedMonthly});
     setEditing(false);
   }
   function submitPlan(cat){
     if(!planName.trim()||!planAmount)return;
-    onAddPlanned({category:cat,name:planName.trim(),amountIDR:parseFloat(planAmount)||0});
+    onAddPlanned({category:cat,name:planName.trim(),amountIDR:parseFloat(planAmount)||0,targetMonth:selectedMonth});
     setPlanName("");setPlanAmount("");setAddingTo(null);
   }
   function statusColor(pct){if(pct>=1)return T.red;if(pct>=0.8)return T.gold;return T.green;}
@@ -2727,12 +2750,15 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,planned,onAddPlanned,onTog
   const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
 
   const today=new Date();
-  const nextM=new Date();nextM.setMonth(nextM.getMonth()+1);
-  const nextMStr=`${nextM.getFullYear()}-${String(nextM.getMonth()+1).padStart(2,"0")}`;
-  const allMonths=[nextMStr,...Array.from({length:6},(_,i)=>{
+  const futureMonths=[3,2,1].map(offset=>{
+    const d=new Date(today.getFullYear(),today.getMonth()+offset,1);
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  });
+  const pastMonths=Array.from({length:6},(_,i)=>{
     const d=new Date(today.getFullYear(),today.getMonth()-i,1);
     return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-  })];
+  });
+  const allMonths=[...futureMonths,...pastMonths];
 
   return(
     <div style={{padding:"20px 16px"}}>
@@ -2747,7 +2773,7 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,planned,onAddPlanned,onTog
             return(
               <button key={m} onClick={()=>setSelectedMonth(m)}
                 style={{background:isActive?T.text:T.white,color:isActive?"#fff":T.textM,border:`1px solid ${isActive?T.text:T.border}`,borderRadius:5,padding:"6px 14px",fontSize:11,fontWeight:isActive?600:400,cursor:"pointer",fontFamily:T.mono}}>
-                {MONTHS_SHORT[d.getMonth()]} {d.getFullYear()}{m===nextMStr?" →":""}
+                {MONTHS_SHORT[d.getMonth()]} {d.getFullYear()}{futureMonths.includes(m)?" →":""}
               </button>
             );
           })}
@@ -2781,7 +2807,7 @@ function Budget({st,bp,budgets,onSaveBudgets,supplies,planned,onAddPlanned,onTog
             <span style={{fontSize:12,color:remainingIDR>=0?T.green:T.red,fontWeight:600,fontFamily:T.mono}}>
               {remainingIDR>=0?"Remaining: ":"Over by: "}{cid(Math.abs(remainingIDR))}
             </span>
-            <button onClick={editing?saveEdit:()=>setEditing(true)}
+            <button onClick={editing?saveEdit:startEditing}
               style={{background:editing?T.text:T.white,color:editing?"#fff":T.textS,border:`1px solid ${editing?T.text:T.borderS}`,borderRadius:4,padding:"5px 14px",fontSize:10,cursor:"pointer",fontFamily:T.mono,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase"}}>
               {editing?"Save":"Edit Budget"}
             </button>
@@ -3013,7 +3039,7 @@ export default function App(){
 
         try{
           const plannedData=await sb("planned_items?order=created_at.desc");
-          if(plannedData)setPlanned(plannedData.map(p=>({...p,amountIDR:parseFloat(p.amount_idr)||0,purchased:p.purchased===true})));
+          if(plannedData)setPlanned(plannedData.map(p=>({...p,amountIDR:parseFloat(p.amount_idr)||0,purchased:p.purchased===true,targetMonth:p.target_month||null})));
         }catch(planErr){ console.error("Planned items load error (table may not exist yet):",planErr); }
 
         const settingsData=await sb("settings");
@@ -3133,7 +3159,7 @@ export default function App(){
     const tempId="tmp-"+Date.now();
     setPlanned(p=>[{...item,id:tempId,purchased:false},...p]);
     try{
-      const saved=await sb("planned_items","POST",{category:item.category,name:item.name,amount_idr:item.amountIDR,purchased:false});
+      const saved=await sb("planned_items","POST",{category:item.category,name:item.name,amount_idr:item.amountIDR,target_month:item.targetMonth||null,purchased:false});
       const realId=saved?.[0]?.id;
       if(realId) setPlanned(p=>p.map(x=>x.id===tempId?{...x,id:realId}:x));
       showToast("✓ Added to plan");
