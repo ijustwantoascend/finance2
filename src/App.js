@@ -1,6 +1,54 @@
 import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
+// ── Biometric unlock (WebAuthn) ────────────────────────────────────────────────
+// Client-only implementation: no backend to verify the cryptographic signature,
+// so the "proof" here is that navigator.credentials.get() only resolves after
+// the OS/authenticator confirms Face ID / Touch ID / fingerprint locally. That's
+// appropriate for a personal single-user gate, not a bank-grade auth system.
+function isWebAuthnSupported(){
+  return typeof window!=="undefined"&&!!window.PublicKeyCredential&&!!navigator.credentials;
+}
+function bufToBase64(buf){
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function base64ToBuf(base64){
+  const binary=atob(base64);
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return bytes.buffer;
+}
+async function registerBiometricCredential(){
+  const challenge=crypto.getRandomValues(new Uint8Array(32));
+  const userId=crypto.getRandomValues(new Uint8Array(16));
+  const publicKey={
+    challenge,
+    rp:{name:"HXN Financial OS"},
+    user:{id:userId,name:"jo@hxn-financial-os",displayName:"Jo"},
+    pubKeyCredParams:[{type:"public-key",alg:-7},{type:"public-key",alg:-257}],
+    authenticatorSelection:{authenticatorAttachment:"platform",userVerification:"required"},
+    timeout:60000,
+    attestation:"none",
+  };
+  const credential=await navigator.credentials.create({publicKey});
+  const credentialId=bufToBase64(credential.rawId);
+  localStorage.setItem("hxn_biometric_credential_id",credentialId);
+  return credentialId;
+}
+async function verifyBiometricCredential(){
+  const storedId=localStorage.getItem("hxn_biometric_credential_id");
+  if(!storedId)throw new Error("No biometric credential registered");
+  const challenge=crypto.getRandomValues(new Uint8Array(32));
+  const publicKey={
+    challenge,
+    allowCredentials:[{type:"public-key",id:base64ToBuf(storedId)}],
+    userVerification:"required",
+    timeout:60000,
+  };
+  const assertion=await navigator.credentials.get({publicKey});
+  return !!assertion;
+}
+
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://jhfvkgxzdvyowaehzooj.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpoZnZrZ3h6ZHZ5b3dhZWh6b29qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MTk3MzMsImV4cCI6MjA5ODQ5NTczM30.5Gf8RYH6qXdJkm7NJHaIOxsiEAEGpeKy_84q1KjQRzM";
@@ -42,8 +90,8 @@ function resolveTag(rawTag,category){
 }
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTH_KEYS   = ["01","02","03","04","05","06","07","08","09","10","11","12"];
-const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","Inventory"];
-const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","⬡"];
+const NAV_ITEMS = ["Dashboard","Ledger","Calendar","Orders","Analytics","Wallets","Budget","Inventory","Goals"];
+const NAV_ICONS = ["◈","≡","▦","⊞","∿","◎","◉","⬡","✦"];
 const HISTORICAL = {
   "2026-04": { inc:4684.00, cost:2416.15, cats:{Dad:315.07,Mom:62.21,Sam:30.23,Glenn:0,Personal:645.35,Dating:232.24,Gas:94.19,Gear:242.63,Miscellaneous:37.87,Family:216.08,"Debt Repayment":0}},
   "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:145.35,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:0,Family:7.97,"Debt Repayment":0}},
@@ -264,7 +312,7 @@ function Toast({msg,onDone}){
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-function Dashboard({st,bp,onDismissBanner}){
+function Dashboard({st,bp,onDismissBanner,goals,onNavigate}){
   const{wallets:w,rates,ledger,orders,btcCostBasis}=st;
   const[stressPct,setStressPct]=useState(0); // 0, -10, -30, -50
   const stressBp=bp?bp*(1+stressPct/100):bp;
@@ -438,6 +486,41 @@ function Dashboard({st,bp,onDismissBanner}){
                 </div>
                 <button onClick={onDismissBanner} style={{background:"none",border:"none",color:T.blue,cursor:"pointer",fontSize:16,lineHeight:1,flexShrink:0}}>×</button>
               </div>
+            </Card>
+          </div>
+        );
+      })()}
+
+      {/* ── Goals & Ambitions — a plain reminder, grouped by month, no check-ins ── */}
+      {(()=>{
+        const currentMonthStr=new Date().toISOString().slice(0,7);
+        const upcoming=(goals||[]).filter(g=>!g.completed&&(g.targetMonth||currentMonthStr)>=currentMonthStr)
+          .sort((a,b)=>(a.targetMonth||"").localeCompare(b.targetMonth||""))
+          .slice(0,6);
+        function monthLabel(m){
+          const d=new Date((m||currentMonthStr)+"-01");
+          return d.getFullYear()===new Date().getFullYear()&&m===currentMonthStr?"This month":`${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+        }
+        return(
+          <div style={{padding:"16px 16px 0"}}>
+            <Card>
+              <CardHeader title="Goals & Ambitions" action={
+                <button onClick={()=>onNavigate&&onNavigate("Goals")} style={{background:"none",border:"none",color:T.blue,fontSize:11,fontFamily:T.mono,cursor:"pointer",fontWeight:600}}>Manage →</button>
+              }/>
+              {upcoming.length===0?(
+                <div onClick={()=>onNavigate&&onNavigate("Goals")} style={{padding:"20px",textAlign:"center",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer"}}>
+                  No goals set — tap to sketch out where you're headed.
+                </div>
+              ):(
+                <div style={{padding:"14px 20px"}}>
+                  {upcoming.map((g,i)=>(
+                    <div key={g.id} style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:i<upcoming.length-1?8:0}}>
+                      <span style={{fontSize:11,color:T.textD,fontFamily:T.mono,minWidth:74,flexShrink:0}}>{monthLabel(g.targetMonth)}:</span>
+                      <span style={{fontSize:12,color:T.textS,fontFamily:T.sans,fontWeight:500}}>{g.title}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Card>
           </div>
         );
@@ -941,13 +1024,14 @@ function Ledger({st,bp,onDelete,onEdit,onBulkRecategorize}){
   );
 }
 // ── Calendar ──────────────────────────────────────────────────────────────────
-function CalendarView({st,bp,onSaveTarget}){
+function CalendarView({st,bp,onSaveTarget,goals}){
   const[year,setYear]=useState(2026);
   const[editingTarget,setEditingTarget]=useState(false);
   const{ledger,rates,wallets:w}=st;
   const thisM=new Date().toISOString().slice(0,7);
   const today=new Date();
   const isCurrentYear=year===today.getFullYear();
+  const[gridMonth,setGridMonth]=useState(new Date(today.getFullYear(),today.getMonth(),1));
 
   const netWorthTarget=st.netWorthTarget||100000;
   const[targetDraft,setTargetDraft]=useState(netWorthTarget);
@@ -997,8 +1081,67 @@ function CalendarView({st,bp,onSaveTarget}){
   const th={textAlign:"right",padding:"9px 12px",color:T.textM,fontSize:10,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:500,fontFamily:T.mono,borderBottom:`1px solid ${T.border}`,background:"#FAFBFC",whiteSpace:"nowrap"};
   const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:14,fontWeight:700,fontFamily:T.mono,outline:"none",width:180};
 
+  // ── Day-grid calendar — actual dates, this month, with activity dots ──
+  const gridYear=gridMonth.getFullYear();
+  const gridMonthIdx=gridMonth.getMonth();
+  const gridMonthStr=`${gridYear}-${String(gridMonthIdx+1).padStart(2,"0")}`;
+  const firstOfMonth=new Date(gridYear,gridMonthIdx,1);
+  const daysInGridMonth=new Date(gridYear,gridMonthIdx+1,0).getDate();
+  const startWeekday=(firstOfMonth.getDay()+6)%7; // Monday-first
+  const gridCells=[];
+  for(let i=0;i<startWeekday;i++)gridCells.push(null);
+  for(let d=1;d<=daysInGridMonth;d++)gridCells.push(d);
+  const activeGoals=(goals||[]).filter(g=>!g.completed);
+  const todayFullStr=today.toISOString().slice(0,10);
+
   return(
     <div style={{padding:"20px 16px"}}>
+
+      {/* Actual day-grid calendar */}
+      <Card style={{marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 20px 12px"}}>
+          <span style={{fontSize:14,fontWeight:700,color:T.text,fontFamily:T.sans}}>{MONTHS_SHORT[gridMonthIdx]} {gridYear}</span>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={()=>setGridMonth(m=>new Date(m.getFullYear(),m.getMonth()-1,1))} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>‹</button>
+            <button onClick={()=>setGridMonth(new Date(today.getFullYear(),today.getMonth(),1))} style={{background:"#F3F4F6",border:"none",color:T.textM,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:T.mono}}>Today</button>
+            <button onClick={()=>setGridMonth(m=>new Date(m.getFullYear(),m.getMonth()+1,1))} style={{background:T.white,border:`1px solid ${T.borderS}`,color:T.textS,borderRadius:4,padding:"4px 10px",cursor:"pointer",fontSize:13}}>›</button>
+          </div>
+        </div>
+        <div style={{padding:"0 16px 16px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
+            {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d=>(
+              <div key={d} style={{textAlign:"center",fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>{d}</div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+            {gridCells.map((d,i)=>{
+              if(d===null)return<div key={i}/>;
+              const dateStr=`${gridMonthStr}-${String(d).padStart(2,"0")}`;
+              const isToday=dateStr===todayFullStr;
+              const dayEntries=ledger.filter(e=>e.date===dateStr);
+              const hasIncome=dayEntries.some(e=>e.type==="income");
+              const hasExpense=dayEntries.some(e=>e.type==="expense");
+              const hasGoalThisMonth=d===1&&activeGoals.some(g=>(g.targetMonth||"")===gridMonthStr);
+              return(
+                <div key={i} style={{aspectRatio:"1",border:`1px solid ${isToday?T.blue:T.border}`,borderRadius:6,padding:"4px 5px",background:isToday?"#F0F9FF":T.white,display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+                  <span style={{fontSize:10,color:isToday?T.blue:T.textM,fontWeight:isToday?700:400,fontFamily:T.mono}}>{d}</span>
+                  <div style={{display:"flex",gap:2,flexWrap:"wrap"}}>
+                    {hasIncome&&<div style={{width:5,height:5,borderRadius:"50%",background:T.green}} title="Income logged"/>}
+                    {hasExpense&&<div style={{width:5,height:5,borderRadius:"50%",background:T.red}} title="Expense logged"/>}
+                    {hasGoalThisMonth&&<div style={{width:5,height:5,borderRadius:"50%",background:T.gold}} title="Goal set for this month"/>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{display:"flex",gap:16,marginTop:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:6,height:6,borderRadius:"50%",background:T.green}}/>Income</span>
+            <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:6,height:6,borderRadius:"50%",background:T.red}}/>Expense</span>
+            <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,display:"flex",alignItems:"center",gap:5}}><div style={{width:6,height:6,borderRadius:"50%",background:T.gold}}/>Goal set that month</span>
+          </div>
+        </div>
+      </Card>
+
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <span style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500}}>Annual Earnings Calendar</span>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -1161,6 +1304,182 @@ function CalendarView({st,bp,onSaveTarget}){
 const PLATFORM_OPTIONS = ["Discord","Telegram","WhatsApp","Instagram","Email","Signal"];
 const PRESET_ITEMS = ["Rt20","Rt15","Cd5","Glow70","Tsm10","Ba10","Bb10"];
  
+// ── Goals & Ambitions — a visual month roadmap, not a habit tracker ──────────
+const GOAL_CATEGORIES=["Health","Business","Personal","Financial"];
+const GOAL_CATEGORY_ICON={Health:"💪",Business:"📈",Personal:"✦",Financial:"$"};
+const GOAL_CATEGORY_COLOR={Health:"#DC2626",Business:"#1D4ED8",Personal:"#7C3AED",Financial:"#16A34A"};
+
+function Goals({goals,onAdd,onUpdate,onComplete,onDelete}){
+  const today=new Date();
+  const currentMonthStr=today.toISOString().slice(0,7);
+  const[selectedMonth,setSelectedMonth]=useState(currentMonthStr);
+  const[draftTitle,setDraftTitle]=useState("");
+  const[draftNote,setDraftNote]=useState("");
+  const[draftCategory,setDraftCategory]=useState("Personal");
+  const[editingId,setEditingId]=useState(null); // which existing goal is being edited, or "new"
+  // Map spans from THIS month forward only — nothing already passed sits on it.
+  // Grouped by year so it reads as a real map with regions, not a single line.
+  const mapMonths=Array.from({length:24},(_,i)=>{
+    const d=new Date(today.getFullYear(),today.getMonth()+i,1);
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  });
+  const monthsByYear={};
+  mapMonths.forEach(m=>{
+    const y=m.slice(0,4);
+    if(!monthsByYear[y])monthsByYear[y]=[];
+    monthsByYear[y].push(m);
+  });
+
+  const goalsByMonth={};
+  (goals||[]).forEach(g=>{
+    const m=g.targetMonth||currentMonthStr;
+    if(!goalsByMonth[m])goalsByMonth[m]=[];
+    goalsByMonth[m].push(g);
+  });
+
+
+  function monthLabel(m){
+    const d=new Date(m+"-01");
+    return`${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+  }
+
+  function startNew(){
+    setEditingId("new");
+    setDraftTitle("");
+    setDraftNote("");
+    setDraftCategory("Personal");
+  }
+  function startEdit(g){
+    setEditingId(g.id);
+    setDraftTitle(g.title||"");
+    setDraftNote(g.note||"");
+    setDraftCategory(g.category||"Personal");
+  }
+  function cancelEdit(){
+    setEditingId(null);
+    setDraftTitle("");setDraftNote("");
+  }
+  function save(){
+    if(!draftTitle.trim())return;
+    if(editingId==="new"){
+      onAdd({title:draftTitle.trim(),note:draftNote,category:draftCategory,targetMonth:selectedMonth});
+    }else{
+      onUpdate(editingId,{title:draftTitle.trim(),note:draftNote,category:draftCategory});
+    }
+    cancelEdit();
+  }
+
+  const monthGoals=(goalsByMonth[selectedMonth]||[]).filter(g=>!g.completed);
+  const completedThisMonth=(goalsByMonth[selectedMonth]||[]).filter(g=>g.completed);
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
+  const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
+
+  return(
+    <div style={{padding:"20px 16px"}}>
+      <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:14}}>Goals & Ambitions — your map</div>
+
+      {/* ── Map: months grouped by year, click any tile ── */}
+      <Card style={{marginBottom:16,overflow:"hidden"}}>
+        <div style={{padding:"20px",background:"radial-gradient(#F3F4F6 1px, transparent 1px)",backgroundSize:"16px 16px"}}>
+          {Object.entries(monthsByYear).map(([year,months])=>(
+            <div key={year} style={{marginBottom:20}}>
+              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:600,marginBottom:10,paddingBottom:6,borderBottom:`1px solid ${T.border}`}}>{year}</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(78px,1fr))",gap:10}}>
+                {months.map(m=>{
+                  const isSelected=m===selectedMonth;
+                  const isCurrent=m===currentMonthStr;
+                  const mGoals=(goalsByMonth[m]||[]).filter(g=>!g.completed);
+                  const hasGoals=mGoals.length>0;
+                  const dotColor=hasGoals?GOAL_CATEGORY_COLOR[mGoals[0].category]||T.text:T.border;
+                  return(
+                    <button key={m} onClick={()=>{setSelectedMonth(m);cancelEdit();}}
+                      style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,background:isSelected?T.text:hasGoals?dotColor+"12":T.white,border:`1.5px solid ${isSelected?T.text:hasGoals?dotColor:isCurrent?T.blue:T.border}`,borderRadius:10,padding:"10px 6px",cursor:"pointer",transition:"all 0.15s"}}>
+                      <span style={{fontSize:11,color:isSelected?"#fff":isCurrent?T.blue:T.textS,fontWeight:isSelected||isCurrent?700:500,fontFamily:T.mono}}>{monthLabel(m).split(" ")[0]}</span>
+                      {hasGoals&&<div style={{width:6,height:6,borderRadius:"50%",background:isSelected?"#fff":dotColor}}/>}
+                      {hasGoals&&<span style={{fontSize:8,color:isSelected?"#fff":T.textD,fontFamily:T.sans,maxWidth:64,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{mGoals[0].title}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* ── Selected month detail ── */}
+      <Card>
+        <CardHeader title={monthLabel(selectedMonth)}
+          action={editingId!=="new"&&<button onClick={startNew} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"5px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>+ Add Goal</button>}
+        />
+
+        {editingId&&(
+          <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"}}>
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,marginBottom:10}}>
+              <div>
+                <label style={lbl}>Title — this is what shows on your Dashboard</label>
+                <input value={draftTitle} onChange={e=>setDraftTitle(e.target.value)} placeholder="e.g. 10% body fat" style={inp} autoFocus/>
+              </div>
+              <div>
+                <label style={lbl}>Category</label>
+                <select value={draftCategory} onChange={e=>setDraftCategory(e.target.value)} style={{...inp,cursor:"pointer"}}>
+                  {GOAL_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{marginBottom:12}}>
+              <label style={lbl}>Notes — what's inspiring you, the details, whatever you want</label>
+              <textarea value={draftNote} onChange={e=>setDraftNote(e.target.value)} placeholder="Write freely here — this stays private to this goal, only the title shows elsewhere."
+                rows={5} style={{...inp,resize:"vertical",fontFamily:T.sans,lineHeight:1.5}}/>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={save} disabled={!draftTitle.trim()} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Save</button>
+              <button onClick={cancelEdit} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:4,padding:"8px 16px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {monthGoals.length===0&&!editingId&&(
+          <div style={{padding:"40px 20px",textAlign:"center",color:T.textD,fontSize:13,fontFamily:T.mono}}>
+            Nothing planned for {monthLabel(selectedMonth)} yet — click "+ Add Goal" above.
+          </div>
+        )}
+
+        {monthGoals.map((g,i)=>(
+          <div key={g.id} style={{padding:"16px 20px",borderBottom:i<monthGoals.length-1||completedThisMonth.length>0?`1px solid #F9FAFB`:"none"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <span style={{fontSize:15}}>{GOAL_CATEGORY_ICON[g.category]||"✦"}</span>
+                  <span style={{fontSize:14,fontWeight:700,color:T.text,fontFamily:T.sans}}>{g.title}</span>
+                  <Badge color={GOAL_CATEGORY_COLOR[g.category]||T.blue}>{g.category}</Badge>
+                </div>
+                {g.note&&<div style={{fontSize:12,color:T.textM,fontFamily:T.sans,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{g.note}</div>}
+              </div>
+              <div style={{display:"flex",gap:6,flexShrink:0}}>
+                <button onClick={()=>startEdit(g)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:13}}>✎</button>
+                <button onClick={()=>onComplete(g.id)} title="Mark achieved" style={{background:"#F0FDF4",color:T.green,border:"1px solid #BBF7D0",borderRadius:4,padding:"4px 9px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono}}>✓</button>
+                <button onClick={()=>onDelete(g.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:16}}>×</button>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {completedThisMonth.length>0&&(
+          <div style={{padding:"12px 20px",background:"#FAFBFC"}}>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Achieved</div>
+            {completedThisMonth.map(g=>(
+              <div key={g.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0"}}>
+                <span style={{fontSize:12,color:T.textD,fontFamily:T.sans,textDecoration:"line-through"}}>{g.title}</span>
+                <button onClick={()=>onDelete(g.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:13}}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function Orders({st,bp,onUpdateOrder,onAddOrder,onDeleteOrder}){
   const{orders}=st;
   const[showForm,setShowForm]=useState(false);
@@ -2185,7 +2504,7 @@ function Reconciliation({wallets,onReconcile,lastReconciled,showToast}){
   );
 }
 
-function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile}){
+function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvailable,biometricRegistered,onEnableBiometric,onDisableBiometric}){
   const{wallets:w,rates,btcCostBasis}=st;
   const nw=netWorth(w,bp,rates);
   const btcTotal=totalBTC(w);
@@ -2272,6 +2591,32 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile}){
         <TransferForm wallets={w} rates={rates} bp={bp} onTransfer={onTransfer} showToast={showToast}/>
       </Card>
       <Reconciliation wallets={w} onReconcile={onReconcile} lastReconciled={st.lastReconciled} showToast={showToast}/>
+
+      {biometricAvailable&&(
+        <Card style={{marginTop:16}}>
+          <CardHeader title="Security"/>
+          <div style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+            <div style={{maxWidth:420}}>
+              <div style={{fontSize:12,color:T.textS,fontFamily:T.sans,fontWeight:600,marginBottom:4}}>Face ID / Touch ID Unlock</div>
+              <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,lineHeight:1.6}}>
+                {biometricRegistered
+                  ? "Enabled on this device — you'll be offered biometric unlock instead of the password next time you open the app."
+                  : "Skip typing the password — unlock with your device's Face ID, Touch ID, or fingerprint sensor instead."}
+              </div>
+            </div>
+            {biometricRegistered?(
+              <button onClick={onDisableBiometric} style={{background:T.white,color:T.red,border:"1px solid #FECACA",borderRadius:5,padding:"9px 18px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+                Disable
+              </button>
+            ):(
+              <button onClick={onEnableBiometric} style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 18px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+                👤 Enable
+              </button>
+            )}
+          </div>
+        </Card>
+      )}
+
       <Card style={{marginTop:16}}>
         <CardHeader title="Backup & Export"/>
         <div style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
@@ -2957,6 +3302,7 @@ export default function App(){
   const[budgets,setBudgets]=useState({});
   const[supplies,setSupplies]=useState([]);
   const[planned,setPlanned]=useState([]);
+  const[goals,setGoals]=useState([]);
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
   const[rates,setRates]=useState(DEFAULT_RATES);
   const[btcCostBasis,setBtcCostBasis]=useState(0);
@@ -2973,6 +3319,11 @@ export default function App(){
   const[lastVisitBanner,setLastVisitBanner]=useState(null);
   const[bannerDismissed,setBannerDismissed]=useState(false);
   const[chatOpen,setChatOpen]=useState(false);
+  const[biometricAvailable,setBiometricAvailable]=useState(false);
+  const[biometricRegistered,setBiometricRegistered]=useState(()=>typeof window!=="undefined"&&!!localStorage.getItem("hxn_biometric_credential_id"));
+  const[biometricError,setBiometricError]=useState(false);
+  const[biometricBusy,setBiometricBusy]=useState(false);
+  const[showPasswordFallback,setShowPasswordFallback]=useState(false);
   const showToast=msg=>setToast(msg);
 
   function tryUnlock(){
@@ -2984,21 +3335,77 @@ export default function App(){
       setTimeout(()=>setPwError(false),2000);
     }
   }
-  
+
+  useEffect(()=>{
+    if(isWebAuthnSupported())setBiometricAvailable(true);
+  },[]);
+
+  async function tryBiometricUnlock(){
+    setBiometricBusy(true);
+    try{
+      await verifyBiometricCredential();
+      sessionStorage.setItem("hxn_auth","true");
+      setUnlocked(true);
+    }catch(e){
+      console.error("Biometric unlock failed:",e);
+      setBiometricError(true);
+      setTimeout(()=>setBiometricError(false),2500);
+    }
+    setBiometricBusy(false);
+  }
+
+  async function enableBiometric(){
+    try{
+      await registerBiometricCredential();
+      setBiometricRegistered(true);
+      showToast("✓ Face ID / Touch ID enabled");
+    }catch(e){
+      console.error("Biometric setup failed:",e);
+      showToast("⚠ Could not enable biometric unlock");
+    }
+  }
+
+  function disableBiometric(){
+    localStorage.removeItem("hxn_biometric_credential_id");
+    setBiometricRegistered(false);
+    showToast("Biometric unlock disabled");
+  }
+
   if(!unlocked) return(
     <div style={{background:T.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:12,padding:"40px",width:320,boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
         <div style={{fontSize:20,marginBottom:4}}>🦉</div>
         <div style={{fontSize:16,fontWeight:800,color:T.text,fontFamily:T.sans,marginBottom:4}}>JJ Financial OS</div>
         <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginBottom:24,fontStyle:"italic"}}>get rich scheme</div>
-        <input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)}
-          onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
-          placeholder="Enter password"
-          style={{width:"100%",background:"#F9FAFB",border:`1px solid ${pwError?"#DC2626":T.borderS}`,borderRadius:6,padding:"10px 14px",fontSize:14,fontFamily:T.mono,outline:"none",marginBottom:12,color:T.text}}/>
-        {pwError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:8}}>Wrong password</div>}
-        <button onClick={tryUnlock} style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
-          Unlock
-        </button>
+
+        {biometricAvailable&&biometricRegistered&&!showPasswordFallback?(
+          <>
+            <button onClick={tryBiometricUnlock} disabled={biometricBusy}
+              style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"14px",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:T.sans,display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:10}}>
+              <span style={{fontSize:18}}>👤</span> {biometricBusy?"Verifying…":"Unlock with Face ID / Touch ID"}
+            </button>
+            {biometricError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:10,textAlign:"center"}}>Verification failed — try again</div>}
+            <button onClick={()=>setShowPasswordFallback(true)} style={{width:"100%",background:"none",border:"none",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline"}}>
+              Use password instead
+            </button>
+          </>
+        ):(
+          <>
+            <input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
+              placeholder="Enter password"
+              style={{width:"100%",background:"#F9FAFB",border:`1px solid ${pwError?"#DC2626":T.borderS}`,borderRadius:6,padding:"10px 14px",fontSize:14,fontFamily:T.mono,outline:"none",marginBottom:12,color:T.text}}/>
+            {pwError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:8}}>Wrong password</div>}
+            <button onClick={tryUnlock} style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
+              Unlock
+            </button>
+            {biometricAvailable&&biometricRegistered&&(
+              <button onClick={()=>setShowPasswordFallback(false)} style={{width:"100%",background:"none",border:"none",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline",marginTop:10}}>
+                Use Face ID / Touch ID instead
+              </button>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -3041,6 +3448,11 @@ export default function App(){
           const plannedData=await sb("planned_items?order=created_at.desc");
           if(plannedData)setPlanned(plannedData.map(p=>({...p,amountIDR:parseFloat(p.amount_idr)||0,purchased:p.purchased===true,targetMonth:p.target_month||null})));
         }catch(planErr){ console.error("Planned items load error (table may not exist yet):",planErr); }
+
+        try{
+          const goalsData=await sb("goals?order=created_at.desc");
+          if(goalsData)setGoals(goalsData.map(g=>({...g,targetMonth:g.target_month||null,note:g.note||"",completed:g.completed===true})));
+        }catch(goalErr){ console.error("Goals load error (table may not exist yet):",goalErr); }
 
         const settingsData=await sb("settings");
         if(settingsData)settingsData.forEach(s=>{
@@ -3178,6 +3590,35 @@ export default function App(){
     setPlanned(p=>p.filter(x=>x.id!==id));
     try{ await sb(`planned_items?id=eq.${id}`,"DELETE"); }
     catch(e){ console.error("Delete planned error:",e); }
+  }
+
+  async function addGoal(g){
+    const tempId="tmp-"+Date.now();
+    setGoals(gs=>[{...g,id:tempId,completed:false},...gs]);
+    try{
+      const saved=await sb("goals","POST",{title:g.title,category:g.category,target_month:g.targetMonth,note:g.note||"",completed:false});
+      const realId=saved?.[0]?.id;
+      if(realId) setGoals(gs=>gs.map(x=>x.id===tempId?{...x,id:realId}:x));
+      showToast("✓ Goal set");
+    }catch(e){ console.error("Add goal error:",e); showToast("⚠ Saved locally — Supabase error"); }
+  }
+
+  async function updateGoal(id,patch){
+    setGoals(gs=>gs.map(x=>x.id===id?{...x,...patch}:x));
+    try{ await sb(`goals?id=eq.${id}`,"PATCH",{title:patch.title,category:patch.category,note:patch.note}); }
+    catch(e){ console.error("Update goal error:",e); }
+  }
+
+  async function completeGoal(id){
+    setGoals(gs=>gs.map(x=>x.id===id?{...x,completed:true}:x));
+    try{ await sb(`goals?id=eq.${id}`,"PATCH",{completed:true}); showToast("🎉 Goal achieved"); }
+    catch(e){ console.error("Complete goal error:",e); }
+  }
+
+  async function deleteGoal(id){
+    setGoals(gs=>gs.filter(x=>x.id!==id));
+    try{ await sb(`goals?id=eq.${id}`,"DELETE"); }
+    catch(e){ console.error("Delete goal error:",e); }
   }
 
   async function applyTransactions(txs){
@@ -3503,14 +3944,15 @@ export default function App(){
       )}
 
       <div style={{maxWidth:1200,margin:"0 auto"}}>
-        {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice} onDismissBanner={()=>setBannerDismissed(true)}/>}
+        {view==="Dashboard"&&<Dashboard st={st} bp={btcPrice} onDismissBanner={()=>setBannerDismissed(true)} goals={goals} onNavigate={setView}/>}
         {view==="Ledger"   &&<Ledger st={st} bp={btcPrice} onDelete={deleteEntry} onEdit={editEntry} onBulkRecategorize={bulkRecategorize}/>}
-        {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget}/>}
+        {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget} goals={goals}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
-        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile}/>}
+        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile} biometricAvailable={biometricAvailable} biometricRegistered={biometricRegistered} onEnableBiometric={enableBiometric} onDisableBiometric={disableBiometric}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} planned={planned} onAddPlanned={addPlanned} onTogglePlanned={togglePlanned} onDeletePlanned={deletePlanned}/>}
         {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
+        {view==="Goals"&&<Goals goals={goals} onAdd={addGoal} onUpdate={updateGoal} onComplete={completeGoal} onDelete={deleteGoal}/>}
       </div>
 
       {/* ── Floating AI Chat widget — bubble instead of a full tab ── */}
