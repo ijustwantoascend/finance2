@@ -3371,45 +3371,6 @@ export default function App(){
     showToast("Biometric unlock disabled");
   }
 
-  if(!unlocked) return(
-    <div style={{background:T.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:12,padding:"40px",width:320,boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
-        <div style={{fontSize:20,marginBottom:4}}>🦉</div>
-        <div style={{fontSize:16,fontWeight:800,color:T.text,fontFamily:T.sans,marginBottom:4}}>JJ Financial OS</div>
-        <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginBottom:24,fontStyle:"italic"}}>get rich scheme</div>
-
-        {biometricAvailable&&biometricRegistered&&!showPasswordFallback?(
-          <>
-            <button onClick={tryBiometricUnlock} disabled={biometricBusy}
-              style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"14px",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:T.sans,display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:10}}>
-              <span style={{fontSize:18}}>👤</span> {biometricBusy?"Verifying…":"Unlock with Face ID / Touch ID"}
-            </button>
-            {biometricError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:10,textAlign:"center"}}>Verification failed — try again</div>}
-            <button onClick={()=>setShowPasswordFallback(true)} style={{width:"100%",background:"none",border:"none",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline"}}>
-              Use password instead
-            </button>
-          </>
-        ):(
-          <>
-            <input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
-              placeholder="Enter password"
-              style={{width:"100%",background:"#F9FAFB",border:`1px solid ${pwError?"#DC2626":T.borderS}`,borderRadius:6,padding:"10px 14px",fontSize:14,fontFamily:T.mono,outline:"none",marginBottom:12,color:T.text}}/>
-            {pwError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:8}}>Wrong password</div>}
-            <button onClick={tryUnlock} style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
-              Unlock
-            </button>
-            {biometricAvailable&&biometricRegistered&&(
-              <button onClick={()=>setShowPasswordFallback(false)} style={{width:"100%",background:"none",border:"none",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline",marginTop:10}}>
-                Use Face ID / Touch ID instead
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-
   useEffect(()=>{
     async function loadAll(){
       setDbLoading(true);
@@ -3495,8 +3456,57 @@ export default function App(){
       }catch(e){console.error("Supabase load error:",e);setSyncError(true);}
       setDbLoading(false);
     }
-    loadAll();
-  },[]);
+    if(unlocked)loadAll();
+
+    // iOS PWAs keep the page alive in the background — when you come back to it
+    // the mount effect never re-runs, so data would be stale. Re-fetch whenever
+    // the app becomes visible again.
+    function onVisible(){
+      if(document.visibilityState==="visible"&&unlocked)loadAll();
+    }
+    document.addEventListener("visibilitychange",onVisible);
+    return()=>document.removeEventListener("visibilitychange",onVisible);
+  },[unlocked]);
+
+  if(!unlocked) return(
+    <div style={{background:T.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:12,padding:"40px",width:320,boxShadow:"0 4px 24px rgba(0,0,0,0.08)"}}>
+        <div style={{fontSize:20,marginBottom:4}}>🦉</div>
+        <div style={{fontSize:16,fontWeight:800,color:T.text,fontFamily:T.sans,marginBottom:4}}>JJ Financial OS</div>
+        <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,marginBottom:24,fontStyle:"italic"}}>get rich scheme</div>
+
+        {biometricAvailable&&biometricRegistered&&!showPasswordFallback?(
+          <>
+            <button onClick={tryBiometricUnlock} disabled={biometricBusy}
+              style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"14px",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:T.sans,display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:10}}>
+              <span style={{fontSize:18}}>👤</span> {biometricBusy?"Verifying…":"Unlock with Face ID / Touch ID"}
+            </button>
+            {biometricError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:10,textAlign:"center"}}>Verification failed — try again</div>}
+            <button onClick={()=>setShowPasswordFallback(true)} style={{width:"100%",background:"none",border:"none",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline"}}>
+              Use password instead
+            </button>
+          </>
+        ):(
+          <>
+            <input type="password" value={pwInput} onChange={e=>setPwInput(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
+              placeholder="Enter password"
+              style={{width:"100%",background:"#F9FAFB",border:`1px solid ${pwError?"#DC2626":T.borderS}`,borderRadius:6,padding:"10px 14px",fontSize:14,fontFamily:T.mono,outline:"none",marginBottom:12,color:T.text}}/>
+            {pwError&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:8}}>Wrong password</div>}
+            <button onClick={tryUnlock} style={{width:"100%",background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
+              Unlock
+            </button>
+            {biometricAvailable&&biometricRegistered&&(
+              <button onClick={()=>setShowPasswordFallback(false)} style={{width:"100%",background:"none",border:"none",color:T.textD,fontSize:12,fontFamily:T.mono,cursor:"pointer",textDecoration:"underline",marginTop:10}}>
+                Use Face ID / Touch ID instead
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+
 
   async function saveWallets(newW){
     setWallets(newW);
@@ -3978,4 +3988,4 @@ export default function App(){
       {toast&&<Toast msg={toast} onDone={()=>setToast(null)}/>}
     </div>
   );
-}
+      }
