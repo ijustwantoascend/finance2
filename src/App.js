@@ -3372,8 +3372,8 @@ export default function App(){
   }
 
   useEffect(()=>{
-    async function loadAll(){
-      setDbLoading(true);
+    async function loadAll(silent){
+      if(!silent)setDbLoading(true);
       const[price,fx]=await Promise.all([fetchBTCPrice(),fetchFXRates()]);
       if(price)setBtcPrice(price);
       if(fx)setRates(fx);
@@ -3458,11 +3458,17 @@ export default function App(){
     }
     if(unlocked)loadAll();
 
-    // iOS PWAs keep the page alive in the background — when you come back to it
-    // the mount effect never re-runs, so data would be stale. Re-fetch whenever
-    // the app becomes visible again.
+    // Only refetch after a real absence — switching tabs or bouncing between
+    // pages shouldn't trigger a reload. 10 minutes away is the threshold, and
+    // the refresh runs silently (no loading screen) so it's never disruptive.
+    let hiddenAt=null;
+    const STALE_AFTER_MS=10*60*1000;
     function onVisible(){
-      if(document.visibilityState==="visible"&&unlocked)loadAll();
+      if(document.visibilityState==="hidden"){hiddenAt=Date.now();return;}
+      if(document.visibilityState==="visible"&&unlocked){
+        if(hiddenAt&&Date.now()-hiddenAt>STALE_AFTER_MS)loadAll(true);
+        hiddenAt=null;
+      }
     }
     document.addEventListener("visibilitychange",onVisible);
     return()=>document.removeEventListener("visibilitychange",onVisible);
@@ -3988,4 +3994,4 @@ export default function App(){
       {toast&&<Toast msg={toast} onDone={()=>setToast(null)}/>}
     </div>
   );
-      }
+}
