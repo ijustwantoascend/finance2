@@ -1309,7 +1309,7 @@ const GOAL_CATEGORIES=["Health","Business","Personal","Financial"];
 const GOAL_CATEGORY_ICON={Health:"💪",Business:"📈",Personal:"✦",Financial:"$"};
 const GOAL_CATEGORY_COLOR={Health:"#DC2626",Business:"#1D4ED8",Personal:"#7C3AED",Financial:"#16A34A"};
 
-function Goals({goals,onAdd,onUpdate,onComplete,onDelete}){
+function Goals({goals,onAdd,onUpdate,onComplete,onDelete,scratchpad,onSaveScratchpad}){
   const today=new Date();
   const currentMonthStr=today.toISOString().slice(0,7);
   const[selectedMonth,setSelectedMonth]=useState(currentMonthStr);
@@ -1317,18 +1317,34 @@ function Goals({goals,onAdd,onUpdate,onComplete,onDelete}){
   const[draftNote,setDraftNote]=useState("");
   const[draftCategory,setDraftCategory]=useState("Personal");
   const[editingId,setEditingId]=useState(null); // which existing goal is being edited, or "new"
+
+  // ── Free-write scratchpad ──
+  // Persists indefinitely — whatever you write is still here tomorrow, next week,
+  // whenever. Auto-saves ~1s after you stop typing, so there's no save button to
+  // remember and nothing gets lost.
+  const[padText,setPadText]=useState(scratchpad||"");
+  const[padSaved,setPadSaved]=useState(true);
+  const padTimer=useRef(null);
+  useEffect(()=>{ setPadText(scratchpad||""); },[scratchpad]);
+  function onPadChange(v){
+    setPadText(v);
+    setPadSaved(false);
+    if(padTimer.current)clearTimeout(padTimer.current);
+    padTimer.current=setTimeout(()=>{
+      onSaveScratchpad&&onSaveScratchpad(v);
+      setPadSaved(true);
+    },1000);
+  }
+
   // Map spans from THIS month forward only — nothing already passed sits on it.
-  // Grouped by year so it reads as a real map with regions, not a single line.
-  const mapMonths=Array.from({length:24},(_,i)=>{
+  // Shown one year at a time so it never feels crowded.
+  const allForwardMonths=Array.from({length:36},(_,i)=>{
     const d=new Date(today.getFullYear(),today.getMonth()+i,1);
     return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
   });
-  const monthsByYear={};
-  mapMonths.forEach(m=>{
-    const y=m.slice(0,4);
-    if(!monthsByYear[y])monthsByYear[y]=[];
-    monthsByYear[y].push(m);
-  });
+  const availableYears=Array.from(new Set(allForwardMonths.map(m=>m.slice(0,4))));
+  const[mapYear,setMapYear]=useState(String(today.getFullYear()));
+  const mapMonths=allForwardMonths.filter(m=>m.slice(0,4)===mapYear);
 
   const goalsByMonth={};
   (goals||[]).forEach(g=>{
@@ -1378,31 +1394,48 @@ function Goals({goals,onAdd,onUpdate,onComplete,onDelete}){
     <div style={{padding:"20px 16px"}}>
       <div style={{fontSize:10,color:T.textM,letterSpacing:"0.16em",textTransform:"uppercase",fontFamily:T.mono,fontWeight:500,marginBottom:14}}>Goals & Ambitions — your map</div>
 
-      {/* ── Map: months grouped by year, click any tile ── */}
+      {/* ── Milestone path — one year at a time ── */}
       <Card style={{marginBottom:16,overflow:"hidden"}}>
-        <div style={{padding:"20px",background:"radial-gradient(#F3F4F6 1px, transparent 1px)",backgroundSize:"16px 16px"}}>
-          {Object.entries(monthsByYear).map(([year,months])=>(
-            <div key={year} style={{marginBottom:20}}>
-              <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,letterSpacing:"0.1em",textTransform:"uppercase",fontWeight:600,marginBottom:10,paddingBottom:6,borderBottom:`1px solid ${T.border}`}}>{year}</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(78px,1fr))",gap:10}}>
-                {months.map(m=>{
-                  const isSelected=m===selectedMonth;
-                  const isCurrent=m===currentMonthStr;
-                  const mGoals=(goalsByMonth[m]||[]).filter(g=>!g.completed);
-                  const hasGoals=mGoals.length>0;
-                  const dotColor=hasGoals?GOAL_CATEGORY_COLOR[mGoals[0].category]||T.text:T.border;
-                  return(
-                    <button key={m} onClick={()=>{setSelectedMonth(m);cancelEdit();}}
-                      style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,background:isSelected?T.text:hasGoals?dotColor+"12":T.white,border:`1.5px solid ${isSelected?T.text:hasGoals?dotColor:isCurrent?T.blue:T.border}`,borderRadius:10,padding:"10px 6px",cursor:"pointer",transition:"all 0.15s"}}>
-                      <span style={{fontSize:11,color:isSelected?"#fff":isCurrent?T.blue:T.textS,fontWeight:isSelected||isCurrent?700:500,fontFamily:T.mono}}>{monthLabel(m).split(" ")[0]}</span>
-                      {hasGoals&&<div style={{width:6,height:6,borderRadius:"50%",background:isSelected?"#fff":dotColor}}/>}
-                      {hasGoals&&<span style={{fontSize:8,color:isSelected?"#fff":T.textD,fontFamily:T.sans,maxWidth:64,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{mGoals[0].title}</span>}
-                    </button>
-                  );
-                })}
+        <div style={{display:"flex",gap:6,padding:"14px 20px 0"}}>
+          {availableYears.map(y=>{
+            const active=y===mapYear;
+            const yearHasGoals=(goals||[]).some(g=>!g.completed&&(g.targetMonth||"").slice(0,4)===y);
+            return(
+              <button key={y} onClick={()=>setMapYear(y)}
+                style={{display:"flex",alignItems:"center",gap:5,background:active?T.text:"transparent",color:active?"#fff":T.textM,border:`1px solid ${active?T.text:T.border}`,borderRadius:16,padding:"5px 14px",fontSize:11,fontWeight:active?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                {y}
+                {yearHasGoals&&<div style={{width:5,height:5,borderRadius:"50%",background:active?"#fff":T.gold}}/>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{padding:"22px 20px 26px",display:"flex",flexWrap:"wrap",alignItems:"flex-start",rowGap:24}}>
+          {mapMonths.length===0&&(
+            <div style={{fontSize:12,color:T.textD,fontFamily:T.mono,padding:"8px 0"}}>Nothing ahead in {mapYear}.</div>
+          )}
+          {mapMonths.map((m,i)=>{
+            const isSelected=m===selectedMonth;
+            const isCurrent=m===currentMonthStr;
+            const mGoals=(goalsByMonth[m]||[]).filter(g=>!g.completed);
+            const hasGoals=mGoals.length>0;
+            const dotColor=hasGoals?GOAL_CATEGORY_COLOR[mGoals[0].category]||T.text:T.border;
+            return(
+              <div key={m} style={{display:"flex",alignItems:"center",flexShrink:0}}>
+                {i>0&&<div style={{width:28,height:1.5,background:T.border,marginTop:-16}}/>}
+                <button onClick={()=>{setSelectedMonth(m);cancelEdit();}}
+                  style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,background:"none",border:"none",cursor:"pointer",padding:0,width:64}}>
+                  <div style={{
+                    width:hasGoals?14:9,height:hasGoals?14:9,borderRadius:"50%",
+                    background:isSelected?T.text:hasGoals?dotColor:T.white,
+                    border:`2px solid ${isSelected?T.text:hasGoals?dotColor:isCurrent?T.blue:T.borderS}`,
+                    transition:"all 0.15s",
+                  }}/>
+                  <span style={{fontSize:10,color:isSelected?T.text:isCurrent?T.blue:T.textD,fontWeight:isSelected||isCurrent?700:400,fontFamily:T.mono}}>{monthLabel(m).split(" ")[0]}</span>
+                  {hasGoals&&<span style={{fontSize:8,color:T.textD,fontFamily:T.sans,maxWidth:60,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.2}}>{mGoals[0].title}</span>}
+                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
 
@@ -1475,6 +1508,24 @@ function Goals({goals,onAdd,onUpdate,onComplete,onDelete}){
             ))}
           </div>
         )}
+      </Card>
+
+      {/* ── Free-write scratchpad — persists indefinitely ── */}
+      <Card style={{marginTop:16}}>
+        <CardHeader title="Notes & Thoughts" action={
+          <span style={{fontSize:10,color:padSaved?T.textD:T.gold,fontFamily:T.mono}}>
+            {padSaved?"saved":"saving…"}
+          </span>
+        }/>
+        <div style={{padding:"14px 20px 18px"}}>
+          <textarea
+            value={padText}
+            onChange={e=>onPadChange(e.target.value)}
+            placeholder="Write freely — anything on your mind. It saves itself and stays here indefinitely."
+            rows={14}
+            style={{width:"100%",background:T.white,border:`1px solid ${T.border}`,borderRadius:8,padding:"14px 16px",fontSize:13,fontFamily:T.sans,lineHeight:1.7,color:T.textS,outline:"none",resize:"vertical"}}
+          />
+        </div>
       </Card>
     </div>
   );
@@ -3303,6 +3354,7 @@ export default function App(){
   const[supplies,setSupplies]=useState([]);
   const[planned,setPlanned]=useState([]);
   const[goals,setGoals]=useState([]);
+  const[scratchpad,setScratchpad]=useState("");
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
   const[rates,setRates]=useState(DEFAULT_RATES);
   const[btcCostBasis,setBtcCostBasis]=useState(0);
@@ -3421,6 +3473,7 @@ export default function App(){
           if(s.key==="budgets"){ try{ setBudgets(JSON.parse(s.value)||{}); }catch{} }
           if(s.key==="last_reconciled") setLastReconciled(s.value);
           if(s.key==="net_worth_target") setNetWorthTarget(parseFloat(s.value)||100000);
+          if(s.key==="scratchpad") setScratchpad(s.value||"");
         });
 
         // ── Since last checked ──
@@ -3635,6 +3688,12 @@ export default function App(){
     setGoals(gs=>gs.filter(x=>x.id!==id));
     try{ await sb(`goals?id=eq.${id}`,"DELETE"); }
     catch(e){ console.error("Delete goal error:",e); }
+  }
+
+  async function saveScratchpad(text){
+    setScratchpad(text);
+    try{ await saveSetting("scratchpad",text); }
+    catch(e){ console.error("Scratchpad save error:",e); }
   }
 
   async function applyTransactions(txs){
@@ -3968,7 +4027,7 @@ export default function App(){
         {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile} biometricAvailable={biometricAvailable} biometricRegistered={biometricRegistered} onEnableBiometric={enableBiometric} onDisableBiometric={disableBiometric}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} planned={planned} onAddPlanned={addPlanned} onTogglePlanned={togglePlanned} onDeletePlanned={deletePlanned}/>}
         {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
-        {view==="Goals"&&<Goals goals={goals} onAdd={addGoal} onUpdate={updateGoal} onComplete={completeGoal} onDelete={deleteGoal}/>}
+        {view==="Goals"&&<Goals goals={goals} onAdd={addGoal} onUpdate={updateGoal} onComplete={completeGoal} onDelete={deleteGoal} scratchpad={scratchpad} onSaveScratchpad={saveScratchpad}/>}
       </div>
 
       {/* ── Floating AI Chat widget — bubble instead of a full tab ── */}
