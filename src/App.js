@@ -154,7 +154,54 @@ async function callClaude(messages,system){
   const d=await r.json(); if(d.error)throw new Error(d.error.message);
   return d.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"";
 }
-async function parseTransaction(text,rates,bp){
+
+// ── Image attachments for AI scanning ─────────────────────────────────────────
+// Reads a picked file, downscales it on a canvas (iPhone photos are far larger
+// than the model needs, and this also converts HEIC → JPEG), returns a block
+// ready for the Anthropic messages API plus a preview URL for the chat bubble.
+const MAX_AI_IMAGES = 5;
+async function fileToImageBlock(file){
+  if(!file||!(file.type||"").startsWith("image/"))throw new Error(`"${file&&file.name||"file"}" isn't an image`);
+  const dataUrl=await new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onerror=()=>rej(new Error(`Couldn't read ${file.name}`));
+    r.onload=()=>res(String(r.result||""));
+    r.readAsDataURL(file);
+  });
+  const img=await new Promise((res,rej)=>{
+    const i=new Image();
+    i.onerror=()=>rej(new Error(`Couldn't open ${file.name} — try a JPG or PNG screenshot`));
+    i.onload=()=>res(i);
+    i.src=dataUrl;
+  });
+  const MAX_EDGE=1568; // the most detail the model uses; anything bigger is wasted upload
+  const scale=Math.min(1,MAX_EDGE/Math.max(img.width,img.height));
+  const w=Math.max(1,Math.round(img.width*scale)),h=Math.max(1,Math.round(img.height*scale));
+  const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext("2d");
+  ctx.fillStyle="#FFFFFF";ctx.fillRect(0,0,w,h); // flatten transparency so receipts stay readable
+  ctx.drawImage(img,0,0,w,h);
+  const out=canvas.toDataURL("image/jpeg",0.85);
+  const data=out.split(",")[1]||"";
+  if(!data)throw new Error(`Couldn't process ${file.name}`);
+  return{media_type:"image/jpeg",data,preview:out,name:file.name||"image"};
+}
+function imageBlocks(images){
+  return(images||[]).map(im=>({type:"image",source:{type:"base64",media_type:im.media_type,data:im.data}}));
+}
+function withImages(text,images){
+  if(!images||!images.length)return text;
+  return[...imageBlocks(images),{type:"text",text:text||"Read these and log any transactions you find."}];
+}
+const IMAGE_RULES=`IMAGE SCANNING: the user may attach photos or screenshots — receipts, bank/wallet push notifications, transfer confirmations, order screenshots, chat screenshots showing a payment.
+- Read every amount, merchant/sender name and date visible, and turn each payment into a transaction.
+- Use the date printed in the image, not today's date, whenever one is legible.
+- One receipt = ONE transaction for its final total (not a row per line item), unless the user asks to split it.
+- Currency from the symbol shown: "Rp"/"IDR" → IDR (bca_idr) · "S$"/"SGD" → SGD (revolut_sgd) · a bare "$" on a receipt in Singapore → SGD (revolut_sgd) · BTC/USDT amounts → the matching crypto wallet.
+- Infer category and tag from the merchant name (e.g. supermarket → Groceries, clinic/lab → Gear/Bloodwork, petrol station → Gas).
+- An image showing only a BALANCE is not a transaction — report what you read instead of logging it.
+- If an amount or date is illegible, say so plainly rather than guessing a number.`
+async function parseTransaction(text,rates,bp,images){
   const today=new Date().toISOString().slice(0,10);
   const yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);
   const sys=`You are a financial transaction parser for a crypto entrepreneur based in Singapore/Indonesia.
@@ -196,9 +243,10 @@ CURRENCY RULES:
 - USDT income → coinbase_usdt (unless user says metamask)
 TRANSFER PAIRS: metamask→coinbase (BTC), coinbase→uob (USDT/BTC→SGD), uob→revolut (SGD), revolut→bca (SGD→IDR)
 CRITICAL: date=YYYY-MM-DD always. Today=${today}. Yesterday=${yesterday}. Never write "today". account never null. amount positive. type exactly "income" or "expense".
+${IMAGE_RULES}
 Return ONLY valid JSON array, no markdown.
 [{"type":"income|expense","category":"...","tag":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]`;
-  const txt=await callClaude([{role:"user",content:text}],sys);
+  const txt=await callClaude([{role:"user",content:withImages(text,images)}],sys);
   const clean=txt.replace(/```json[\s\S]*?```|```/g,"").trim();
   const parsed=JSON.parse(clean);
   return parsed.map(e=>{
@@ -209,7 +257,7 @@ Return ONLY valid JSON array, no markdown.
       date:(e.date&&/^\d{4}-\d{2}-\d{2}$/.test(e.date))?e.date:today};
   });
 }
-async function aiChat(userMsg,state,bp,chatHistory){
+async function aiChat(userMsg,state,bp,chatHistory,images){
   const nw=netWorth(state.wallets,bp,state.rates);
   const thisM=new Date().toISOString().slice(0,7);
   const md=buildMonth(thisM,state.ledger,bp,state.rates);
@@ -236,8 +284,9 @@ If user describes income/expenses/transfers output at end:
 <TRANSACTIONS>[{"type":"income|expense","category":"...","tag":"...","amount":0,"currency":"BTC|USDT|SGD|IDR","account":"...","label":"...","date":"YYYY-MM-DD"}]</TRANSACTIONS>
 CRITICAL: date=YYYY-MM-DD never "today". Today=${new Date().toISOString().slice(0,10)}. account never null. "$" in expenses=SGD→revolut_sgd.
 TRANSFER RULES: If user mentions transfer/move/send between accounts, output TWO entries both with type:"transfer" and category:"Transfer". First entry label "Transfer → [destination]", second label "Transfer ← [source]". Never use type expense or income for transfers.
+${IMAGE_RULES}
 Be concise, data-driven, give real advice.`;
-  return await callClaude([...chatHistory.slice(-8),{role:"user",content:userMsg}],sys);
+  return await callClaude([...chatHistory.slice(-8),{role:"user",content:withImages(userMsg,images)}],sys);
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -1312,7 +1361,7 @@ const GOAL_CATEGORY_COLOR={Health:"#DC2626",Business:"#1D4ED8",Personal:"#7C3AED
 function Goals({goals,onAdd,onUpdate,onComplete,onDelete,scratchpad,onSaveScratchpad}){
   const today=new Date();
   const currentMonthStr=today.toISOString().slice(0,7);
-  const[selectedMonth,setSelectedMonth]=useState(currentMonthStr);
+  const[selectedMonth,setSelectedMonth]=useState(null); // null = no month open; panel only appears on click
   const[draftTitle,setDraftTitle]=useState("");
   const[draftNote,setDraftNote]=useState("");
   const[draftCategory,setDraftCategory]=useState("Personal");
@@ -1422,7 +1471,7 @@ function Goals({goals,onAdd,onUpdate,onComplete,onDelete,scratchpad,onSaveScratc
             return(
               <div key={m} style={{display:"flex",alignItems:"center",flexShrink:0}}>
                 {i>0&&<div style={{width:28,height:1.5,background:T.border,marginTop:-16}}/>}
-                <button onClick={()=>{setSelectedMonth(m);cancelEdit();}}
+                <button onClick={()=>{setSelectedMonth(prev=>prev===m?null:m);cancelEdit();}}
                   style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,background:"none",border:"none",cursor:"pointer",padding:0,width:64}}>
                   <div style={{
                     width:hasGoals?14:9,height:hasGoals?14:9,borderRadius:"50%",
@@ -1439,10 +1488,22 @@ function Goals({goals,onAdd,onUpdate,onComplete,onDelete,scratchpad,onSaveScratc
         </div>
       </Card>
 
-      {/* ── Selected month detail ── */}
+      {!selectedMonth&&(
+        <div style={{textAlign:"center",fontSize:11,color:T.textD,fontFamily:T.mono,padding:"14px 0 2px"}}>
+          Tap a month above to open it.
+        </div>
+      )}
+
+      {/* ── Selected month detail — only rendered once a month dot is clicked ── */}
+      {selectedMonth&&(
       <Card>
         <CardHeader title={monthLabel(selectedMonth)}
-          action={editingId!=="new"&&<button onClick={startNew} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"5px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>+ Add Goal</button>}
+          action={
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              {editingId!=="new"&&<button onClick={startNew} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"5px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>+ Add Goal</button>}
+              <button onClick={()=>{setSelectedMonth(null);cancelEdit();}} title="Close" style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:17,lineHeight:1,padding:"0 2px"}}>×</button>
+            </div>
+          }
         />
 
         {editingId&&(
@@ -1509,6 +1570,7 @@ function Goals({goals,onAdd,onUpdate,onComplete,onDelete,scratchpad,onSaveScratc
           </div>
         )}
       </Card>
+      )}
 
       {/* ── Free-write scratchpad — persists indefinitely ── */}
       <Card style={{marginTop:16}}>
@@ -2719,20 +2781,49 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
 // ── AI Chat ───────────────────────────────────────────────────────────────────
 function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
   const[input,setInput]=useState("");
-  const[msgs,setMsgs]=useState([{role:"assistant",content:"I'm your financial OS. Log transactions or ask anything.\n\nExamples:\n• \"made 0.004 BTC dropshipping today\"\n• \"spent $45 on dating\" (= SGD from Revolut)\n• \"add 300 USDT to metamask\"\n• \"500k IDR from BCA for gas\"\n• \"how's my net worth?\""}]);
+  const[msgs,setMsgs]=useState([{role:"assistant",content:"I'm your financial OS. Log transactions, scan a receipt, or ask anything.\n\nType it:\n• \"made 0.004 BTC dropshipping today\"\n• \"spent $45 on dating\" (= SGD from Revolut)\n• \"500k IDR from BCA for gas\"\n• \"how's my net worth?\"\n\nOr skip typing — hit ⎙ Photo (or paste a screenshot) to attach a receipt, bank notification or transfer confirmation, then Log ↗ and I'll pull the amounts, dates and categories out of it."}]);
   const[loading,setLoading]=useState(false);
   const[pendingTx,setPendingTx]=useState(null);
   const[chatHistory,setChatHistory]=useState([]);
+  const[images,setImages]=useState([]);   // attached receipt/screenshot photos, pre-encoded
+  const[imgErr,setImgErr]=useState("");
+  const[imgBusy,setImgBusy]=useState(false);
+  const fileRef=useRef(null);
   const scrollRef=useRef(null);
-  useEffect(()=>{if(scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;},[msgs,loading]);
+  useEffect(()=>{if(scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;},[msgs,loading,images]);
+
+  async function addFiles(fileList){
+    const files=Array.from(fileList||[]);
+    if(!files.length)return;
+    setImgErr("");setImgBusy(true);
+    const room=MAX_AI_IMAGES-images.length;
+    if(room<=0){setImgErr(`Max ${MAX_AI_IMAGES} images at a time.`);setImgBusy(false);return;}
+    const next=[];let err="";
+    for(const f of files.slice(0,room)){
+      try{ next.push(await fileToImageBlock(f)); }catch(e){ err=e.message; }
+    }
+    if(files.length>room)err=`Only the first ${room} image${room!==1?"s":""} were added (max ${MAX_AI_IMAGES}).`;
+    if(next.length)setImages(prev=>[...prev,...next]);
+    if(err)setImgErr(err);
+    setImgBusy(false);
+  }
+  function removeImage(i){setImages(prev=>prev.filter((_,j)=>j!==i));setImgErr("");}
+  function onPaste(e){
+    const files=Array.from(e.clipboardData?.files||[]).filter(f=>(f.type||"").startsWith("image/"));
+    if(files.length){e.preventDefault();addFiles(files);}
+  }
 
   async function send(){
-    if(!input.trim()||loading)return;
-    const userMsg=input.trim();setInput("");
+    if((!input.trim()&&!images.length)||loading)return;
+    const userMsg=input.trim()||"Read these and log any transactions you find.";
+    const imgs=images;
+    setInput("");setImages([]);setImgErr("");
+    // history stays text-only so the photos aren't re-uploaded on every later turn
     const newHistory=[...chatHistory,{role:"user",content:userMsg}];
-    setMsgs(m=>[...m,{role:"user",content:userMsg}]);setLoading(true);
+    setMsgs(m=>[...m,{role:"user",content:userMsg,images:imgs.map(i=>i.preview)}]);setLoading(true);
     try{
-      const reply=await aiChat(userMsg,st,bp,newHistory);
+      // chatHistory (not newHistory) — aiChat appends this turn's message itself
+      const reply=await aiChat(userMsg,st,bp,chatHistory,imgs);
       const txMatch=reply.match(/<TRANSACTIONS>([\s\S]*?)<\/TRANSACTIONS>/);
       let cleanReply=reply.replace(/<TRANSACTIONS>[\s\S]*?<\/TRANSACTIONS>/g,"").trim();
       if(txMatch){
@@ -2758,10 +2849,12 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
   }
 
   async function quickLog(){
-    if(!input.trim()||loading)return;
-    const txt=input.trim();setInput("");
-    setMsgs(m=>[...m,{role:"user",content:txt},{role:"assistant",content:"Parsing..."}]);setLoading(true);
-    try{const txs=await parseTransaction(txt,st.rates,bp);setPendingTx(txs);setMsgs(m=>[...m.slice(0,-1),{role:"assistant",content:`Parsed ${txs.length} transaction(s) — confirm to save.`}]);}
+    if((!input.trim()&&!images.length)||loading)return;
+    const txt=input.trim()||"Extract every transaction shown in the attached image(s).";
+    const imgs=images;
+    setInput("");setImages([]);setImgErr("");
+    setMsgs(m=>[...m,{role:"user",content:txt,images:imgs.map(i=>i.preview)},{role:"assistant",content:imgs.length?"Scanning image…":"Parsing..."}]);setLoading(true);
+    try{const txs=await parseTransaction(txt,st.rates,bp,imgs);setPendingTx(txs);setMsgs(m=>[...m.slice(0,-1),{role:"assistant",content:`Parsed ${txs.length} transaction(s) — confirm to save.`}]);}
     catch(e){setMsgs(m=>[...m.slice(0,-1),{role:"assistant",content:"Parse error: "+e.message}]);}
     setLoading(false);
   }
@@ -2773,6 +2866,13 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
           <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:12}}>
             {m.role==="assistant"&&<div style={{width:24,height:24,borderRadius:"50%",background:T.text,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,marginRight:8,flexShrink:0,marginTop:2,color:"#fff",fontFamily:T.sans,fontWeight:700}}>AI</div>}
             <div style={{maxWidth:"76%",background:m.role==="user"?T.text:T.white,border:`1px solid ${m.role==="user"?T.text:T.border}`,borderRadius:m.role==="user"?"12px 12px 2px 12px":"12px 12px 12px 2px",padding:"11px 15px",fontSize:13,color:m.role==="user"?"#fff":T.textS,lineHeight:1.65,whiteSpace:"pre-wrap",fontFamily:T.sans,boxShadow:m.role==="assistant"?"0 1px 3px rgba(0,0,0,0.05)":"none"}}>
+              {m.images&&m.images.length>0&&(
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:m.content?9:0}}>
+                  {m.images.map((src,j)=>(
+                    <img key={j} src={src} alt="attachment" style={{width:88,height:88,objectFit:"cover",borderRadius:6,border:`1px solid ${m.role==="user"?"rgba(255,255,255,0.28)":T.border}`,display:"block"}}/>
+                  ))}
+                </div>
+              )}
               {m.content}
             </div>
           </div>
@@ -2796,17 +2896,45 @@ function AIChat({st,bp,onTransactions,onBTCFetch,btcLoading}){
         )}
       </div>
       <div style={{borderTop:`1px solid ${T.border}`,paddingTop:12,background:T.white,margin:"0 -16px",padding:"12px 16px"}}>
+        <input ref={fileRef} type="file" accept="image/*" multiple
+          onChange={e=>{addFiles(e.target.files);e.target.value="";}}
+          style={{display:"none"}}/>
+
+        {(images.length>0||imgBusy||imgErr)&&(
+          <div style={{marginBottom:9}}>
+            {images.length>0&&(
+              <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:imgErr?7:0}}>
+                {images.map((im,i)=>(
+                  <div key={i} style={{position:"relative"}}>
+                    <img src={im.preview} alt={im.name} style={{width:62,height:62,objectFit:"cover",borderRadius:6,border:`1px solid ${T.borderS}`,display:"block"}}/>
+                    <button onClick={()=>removeImage(i)} title="Remove"
+                      style={{position:"absolute",top:-6,right:-6,width:19,height:19,borderRadius:"50%",background:T.text,color:"#fff",border:"2px solid #fff",cursor:"pointer",fontSize:11,lineHeight:0,display:"flex",alignItems:"center",justifyContent:"center",padding:0,fontFamily:T.sans}}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {imgBusy&&<div style={{fontSize:10,color:T.textM,fontFamily:T.mono,marginTop:4}}>processing image…</div>}
+            {imgErr&&<div style={{fontSize:10,color:T.red,fontFamily:T.mono}}>{imgErr}</div>}
+          </div>
+        )}
+
         <div style={{display:"flex",gap:8,marginBottom:8}}>
-          <button onClick={onBTCFetch} disabled={btcLoading} style={{background:"#FEF3C7",color:T.gold,border:`1px solid #FDE68A`,borderRadius:6,padding:"8px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
-            {btcLoading?"fetching…":"↻ BTC + FX"}
-          </button>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            <button onClick={onBTCFetch} disabled={btcLoading} style={{background:"#FEF3C7",color:T.gold,border:`1px solid #FDE68A`,borderRadius:6,padding:"8px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+              {btcLoading?"fetching…":"↻ BTC + FX"}
+            </button>
+            <button onClick={()=>fileRef.current&&fileRef.current.click()} disabled={loading||imgBusy}
+              style={{background:T.white,color:T.textS,border:`1px solid ${T.borderS}`,borderRadius:6,padding:"8px 14px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:T.sans,whiteSpace:"nowrap"}}>
+              ⎙ Photo{images.length?` (${images.length})`:""}
+            </button>
+          </div>
           <div style={{flex:1,display:"flex",gap:6}}>
-            <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
-              rows={2} placeholder='"0.003 BTC dropshipping today" · "spent $45 on dating" · "how is my margin?"'
+            <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onPaste} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
+              rows={2} placeholder={images.length?'Add a note, or just hit "Log ↗" to scan the photo':'"0.003 BTC dropshipping today" · snap a receipt with ⎙ Photo · "how is my margin?"'}
               style={{flex:1,background:T.white,border:`1px solid ${T.borderS}`,borderRadius:6,padding:"10px 14px",color:T.text,fontSize:13,fontFamily:T.sans,outline:"none",resize:"none"}}/>
             <div style={{display:"flex",flexDirection:"column",gap:5}}>
-              <button onClick={send} disabled={loading||!input.trim()} style={{background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"9px 14px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Ask →</button>
-              <button onClick={quickLog} disabled={loading||!input.trim()} style={{background:"#FEF3C7",color:T.gold,border:`1px solid #FDE68A`,borderRadius:6,padding:"9px 14px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Log ↗</button>
+              <button onClick={send} disabled={loading||(!input.trim()&&!images.length)} style={{background:T.text,color:"#fff",border:"none",borderRadius:6,padding:"9px 14px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Ask →</button>
+              <button onClick={quickLog} disabled={loading||(!input.trim()&&!images.length)} style={{background:"#FEF3C7",color:T.gold,border:`1px solid #FDE68A`,borderRadius:6,padding:"9px 14px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Log ↗</button>
             </div>
           </div>
         </div>
