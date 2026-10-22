@@ -97,7 +97,31 @@ const HISTORICAL = {
   "2026-05": { inc:5533.35, cost:3075.17, cats:{Dad:1034.88,Mom:87.21,Sam:612.62,Glenn:145.35,Personal:563.49,Dating:198.31,Gas:81.40,Gear:395.35,Miscellaneous:0,Family:7.97,"Debt Repayment":0}},
   "2026-06": { inc:6765.00, cost:1603.71, cats:{Dad:306.76,Mom:129.83,Sam:129.83,Glenn:138.93,Personal:203.95,Dating:229.87,Gas:61.13,Gear:360.12,Miscellaneous:0,Family:44.46,"Debt Repayment":0}},
 };
-const DEFAULT_WALLETS = { coinbase_btc:0,metamask_btc:0,coinbase_usdt:0,metamask_usdt:0,uob_sgd:0,revolut_sgd:0,bca_idr:0 };
+const DEFAULT_WALLETS = { coinbase_btc:0,metamask_btc:0,coinbase_usdt:0,metamask_usdt:0,uob_sgd:0,revolut_sgd:0,bca_idr:0,broker_usd:0,broker_sgd:0 };
+// Cash sitting at the broker, waiting to be deployed. Funded by a transfer from
+// a bank account, drawn down when you buy, topped up when you sell.
+const BROKER_CASH = [
+  {key:"broker_usd",currency:"USD",label:"Brokerage Cash (USD)"},
+  {key:"broker_sgd",currency:"SGD",label:"Brokerage Cash (SGD)"},
+];
+function brokerCashForCurrency(c){ return c==="SGD"?"broker_sgd":"broker_usd"; }
+function brokerCashUSD(w,rates){ return (w.broker_usd||0)+(w.broker_sgd||0)/((rates||DEFAULT_RATES).USDSGD||1.354); }
+// One converter for every cross-currency move, bridged through USD. USDT is
+// treated as a dollar.
+function convertAmount(amt,from,to,rates,bp){
+  const a=parseFloat(amt)||0;
+  if(from===to)return a;
+  const r=rates||DEFAULT_RATES;
+  let usd;
+  if(from==="BTC")usd=a*(bp||0);
+  else if(from==="SGD")usd=a/(r.USDSGD||1.354);
+  else if(from==="IDR")usd=a/(r.USDIDR||16200);
+  else usd=a;
+  if(to==="BTC")return bp?usd/bp:0;
+  if(to==="SGD")return usd*(r.USDSGD||1.354);
+  if(to==="IDR")return usd*(r.USDIDR||16200);
+  return usd;
+}
 const DEFAULT_RATES   = { USDSGD:1.354, USDIDR:16200 };
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
@@ -122,7 +146,87 @@ function computeAvgCostBasis(ledger, fallback){
   });
   return totalBTC>0 ? totalUSD/totalBTC : (fallback||0);
 }
-function netWorth(w,bp,rates){ return totalBTC(w)*(bp||0)+totalUSDT(w)+(w.uob_sgd||0)/(rates.USDSGD||1.354)+(w.revolut_sgd||0)/(rates.USDSGD||1.354)+(w.bca_idr||0)/(rates.USDIDR||16200); }
+// ── Holdings ─────────────────────────────────────────────────────────────────
+// A holding is an INSTRUMENT (what you own) plus its TRANSACTIONS (how you came
+// to own it). Anything can be held — stock, ETF, digital asset, contract, bond —
+// priced in whatever currency it actually trades in, not just USD. Quantity and
+// cost basis are never typed in directly: they're derived from the transactions,
+// so adding a second buy re-averages the basis the way a broker statement does.
+const ASSET_TYPES=[
+  {k:"stock",    label:"Stock",         icon:"▣", color:"#1D4ED8"},
+  {k:"etf",      label:"ETF / Fund",    icon:"▤", color:"#0F766E"},
+  {k:"crypto",   label:"Digital Asset", icon:"◈", color:"#D97706"},
+  {k:"contract", label:"Contract",      icon:"◫", color:"#7C3AED"},
+  {k:"bond",     label:"Bond",          icon:"▬", color:"#475569"},
+  {k:"other",    label:"Other",         icon:"○", color:"#6B7280"},
+];
+function assetType(k){ return ASSET_TYPES.find(a=>a.k===k)||ASSET_TYPES[ASSET_TYPES.length-1]; }
+const HOLDING_CURRENCIES=["USD","SGD","IDR"];
+// Signed FX conversion. toUSD() above takes an absolute value, which would turn
+// a loss into a gain — P&L needs the sign kept.
+function fxToUSD(amount,currency,rates){
+  const a=parseFloat(amount)||0;
+  const r=rates||DEFAULT_RATES;
+  if(currency==="SGD")return a/(r.USDSGD||1.354);
+  if(currency==="IDR")return a/(r.USDIDR||16200);
+  return a;
+}
+function fmtNative(amount,currency,d=2){
+  if(currency==="SGD")return csg(amount);
+  if(currency==="IDR")return cid(amount);
+  return cu(amount,d);
+}
+// Average-cost basis, walked in trade order — the same method a broker's
+// "average cost" column uses. A sell removes cost at the running average and
+// books the difference as realized, so the remaining basis stays honest.
+function computeHolding(lots,multiplier){
+  const m=parseFloat(multiplier)||1;
+  const sorted=[...(lots||[])].sort((a,b)=>
+    String(a.tradeDate||"").localeCompare(String(b.tradeDate||""))||((a.id||0)-(b.id||0)));
+  let qty=0,cost=0,realized=0,fees=0;
+  for(const l of sorted){
+    const q=Math.abs(parseFloat(l.qty)||0);
+    const px=parseFloat(l.price)||0;
+    const fee=parseFloat(l.fee)||0;
+    fees+=fee;
+    if(l.kind==="sell"){
+      const avgUnit=qty>0?cost/(qty*m):0;
+      const sold=Math.min(q,qty);
+      realized+=sold*px*m-fee-sold*avgUnit*m;
+      cost-=sold*avgUnit*m;
+      qty-=sold;
+      if(qty<1e-10){qty=0;cost=0;} // fully closed — don't leave float dust behind
+    }else{
+      qty+=q;cost+=q*px*m+fee;
+    }
+  }
+  return{qty,costNative:cost,avgCost:qty>0?cost/(qty*m):0,realizedNative:realized,feesNative:fees,lotCount:sorted.length};
+}
+function holdingCalc(p){ return p.calc||computeHolding(p.lots,p.multiplier); }
+// Manual price wins (contracts and anything with no feed), then the live quote,
+// then cost basis so a holding never renders as $0 before its first fetch.
+function holdingPriceNative(p){
+  if(p.manualPrice!=null&&p.manualPrice!=="")return parseFloat(p.manualPrice)||0;
+  if(p.lastPrice!=null)return p.lastPrice;
+  return holdingCalc(p).avgCost;
+}
+function holdingHasLivePrice(p){ return (p.manualPrice==null||p.manualPrice==="")&&p.lastPrice!=null; }
+function holdingValueNative(p){ return holdingCalc(p).qty*holdingPriceNative(p)*(parseFloat(p.multiplier)||1); }
+function holdingPnLNative(p){ return holdingValueNative(p)-holdingCalc(p).costNative; }
+function holdingDayChangeNative(p){
+  if(!holdingHasLivePrice(p)||p.prevClose==null||!p.prevClose)return 0;
+  return holdingCalc(p).qty*(p.lastPrice-p.prevClose)*(parseFloat(p.multiplier)||1);
+}
+// Open holdings only — a fully sold-out position stays on record for its
+// realized P&L but contributes nothing to what you currently own.
+function openHoldings(ps){ return (ps||[]).filter(p=>holdingCalc(p).qty>0); }
+function positionsValueUSD(ps,rates){ return (ps||[]).reduce((s,p)=>s+fxToUSD(holdingValueNative(p),p.currency,rates),0); }
+function positionsCostUSD(ps,rates){ return (ps||[]).reduce((s,p)=>s+fxToUSD(holdingCalc(p).costNative,p.currency,rates),0); }
+function positionsPnL(ps,rates){ return positionsValueUSD(ps,rates)-positionsCostUSD(ps,rates); }
+function positionsRealizedUSD(ps,rates){ return (ps||[]).reduce((s,p)=>s+fxToUSD(holdingCalc(p).realizedNative,p.currency,rates),0); }
+function positionsDayChangeUSD(ps,rates){ return (ps||[]).reduce((s,p)=>s+fxToUSD(holdingDayChangeNative(p),p.currency,rates),0); }
+// positions is optional — every pre-existing caller keeps its old result
+function netWorth(w,bp,rates,positions){ return totalBTC(w)*(bp||0)+totalUSDT(w)+(w.uob_sgd||0)/(rates.USDSGD||1.354)+(w.revolut_sgd||0)/(rates.USDSGD||1.354)+(w.bca_idr||0)/(rates.USDIDR||16200)+brokerCashUSD(w,rates)+positionsValueUSD(positions,rates); }
 function buildMonth(ym,ledger,bp,rates){
   const hist=HISTORICAL[ym];
   const entries=ledger.filter(e=>e.date?.startsWith(ym));
@@ -142,6 +246,48 @@ function buildMonth(ym,ledger,bp,rates){
 async function fetchBTCPrice(){
   try{ const r=await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"); const d=await r.json(); return d.bitcoin?.usd||null; }
   catch{ try{ const r2=await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"); const d2=await r2.json(); return parseFloat(d2.price)||null; }catch{ return null; } }
+}
+// Stock quotes. IBKR itself can't be reached from a browser (its gateway needs
+// to run on the same machine that makes the calls), so holdings are entered by
+// hand here and only the PRICES come from a live feed.
+const STOCK_API_KEY = process.env.REACT_APP_FINNHUB_KEY;
+async function fetchQuote(ticker){
+  if(!STOCK_API_KEY)return null;
+  try{
+    const r=await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${STOCK_API_KEY}`);
+    if(!r.ok)return null;
+    const d=await r.json();
+    const price=parseFloat(d&&d.c);
+    if(!price)return null; // 0 / undefined = unknown ticker or no data
+    return{price,prevClose:parseFloat(d.pc)||null,dayChangePct:d.dp!=null?parseFloat(d.dp):null};
+  }catch{ return null; }
+}
+// What to ask the price feed for. Defaults to the ticker, but a holding can
+// override it — digital assets need an exchange prefix (BINANCE:BTCUSDT), and a
+// non-US listing needs its suffix (D05.SI for a Singapore line).
+function quoteSymbolFor(p){
+  const s=(p.quoteSymbol||"").trim();
+  return (s||String(p.ticker||"").trim()).toUpperCase();
+}
+// Only holdings that actually want a feed: skip manually-priced ones and
+// anything closed out.
+function quotableSymbols(positions){
+  return openHoldings(positions)
+    .filter(p=>p.manualPrice==null||p.manualPrice==="")
+    .map(quoteSymbolFor)
+    .filter(Boolean);
+}
+// Batched so a long watchlist doesn't trip the free tier's per-minute cap
+async function fetchQuotes(tickers){
+  const out={};
+  const uniq=[...new Set((tickers||[]).map(t=>String(t||"").trim().toUpperCase()).filter(Boolean))];
+  for(let i=0;i<uniq.length;i+=5){
+    const batch=uniq.slice(i,i+5);
+    const res=await Promise.all(batch.map(t=>fetchQuote(t)));
+    batch.forEach((t,j)=>{ if(res[j])out[t]=res[j]; });
+    if(i+5<uniq.length)await new Promise(r=>setTimeout(r,300));
+  }
+  return out;
 }
 async function fetchFXRates(){
   try{ const r=await fetch("https://api.exchangerate-api.com/v4/latest/USD"); const d=await r.json(); if(d?.rates?.SGD&&d?.rates?.IDR)return{USDSGD:d.rates.SGD,USDIDR:d.rates.IDR}; return null; }catch{ return null; }
@@ -209,7 +355,7 @@ FINANCIAL FLOW:
 - INCOME: always crypto. BTC → metamask_btc or coinbase_btc. USDT → coinbase_usdt or metamask_usdt.
 - EXPENSES: always fiat. SGD from revolut_sgd. IDR from bca_idr. Never deduct from crypto for expenses.
 -TRANSFERS:  Transfers between accounts = type:"transfer", category:"Transfer". Two entries: label "Transfer → X" and "Transfer ← Y"
-ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
+ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr, broker_usd (brokerage cash USD), broker_sgd (brokerage cash SGD)
 EXPENSE CATEGORIES (EXACTLY one): Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Groceries, Miscellaneous, Family, Debt Repayment
 CATEGORY MAPPING:
 - dad, father, papa → Dad | mom, mother, mama → Mom | sam → Sam | glenn → Glenn
@@ -258,15 +404,16 @@ Return ONLY valid JSON array, no markdown.
   });
 }
 async function aiChat(userMsg,state,bp,chatHistory,images){
-  const nw=netWorth(state.wallets,bp,state.rates);
+  const nw=netWorth(state.wallets,bp,state.rates,state.positions);
   const thisM=new Date().toISOString().slice(0,7);
   const md=buildMonth(thisM,state.ledger,bp,state.rates);
   const btcTotal=totalBTC(state.wallets);
   const btcPnL=bp&&state.btcCostBasis?(bp-state.btcCostBasis)*btcTotal:0;
   const recentTx=state.ledger.slice(0,5).map(e=>`${e.date} [${e.type}] ${e.label||e.category} ${e.amount} ${e.currency}`).join("\n")||"none";
   const sys=`You are Jo's personal finance AI — sharp, direct, data-driven.
+BROKERAGE: cash is moved bank -> broker_usd/broker_sgd as a TRANSFER, never income. Buying a holding is not an expense; it is a transfer out of brokerage cash.
 FINANCIAL FLOW: INCOME=crypto(BTC→metamask_btc/coinbase_btc, USDT→coinbase_usdt/metamask_usdt). EXPENSES=fiat(SGD→revolut_sgd, IDR→bca_idr). "$" in expenses=SGD. TRANSFERS=two entries.
-ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr
+ACCOUNTS: metamask_btc, coinbase_btc, coinbase_usdt, metamask_usdt, uob_sgd, revolut_sgd, bca_idr, broker_usd, broker_sgd
 EXPENSE CATEGORIES: Dad, Mom, Sam, Glenn, Personal, Dating, Gas, Gear, Groceries, Miscellaneous, Family, Debt Repayment
 CATEGORY: steroids/PEDs/bloodwork=Gear. supplements/vitamins/protein=Personal. supermarket/groceries/household supplies=Groceries. dining out/restaurant=Family. subscriptions/data plan/phone number/Claude/Telegram/software tools=Business Reinvestment. Never invent categories.
 TAG (subcategory, one level more specific than category): Gear→PEDs/Steroids|Bloodwork|Equipment|Clothing. Personal→Supplements|Grooming|Self-care|Other. Dating→Dates|Gifts|Flowers|Other. Family→Dining|Household|Other. Groceries→Weekly Shop|Household Supplies|Bulk / Stock-up|Other. Gas→Fuel|Transport / Rideshare|Other. Dad/Mom/Sam/Glenn→Support|Gift|Other. Miscellaneous→Unclassified|One-off|Other. If unsure use that category's "Other".
@@ -277,6 +424,8 @@ LIVE STATE:
 - MetaMask BTC: ${cbt(state.wallets.metamask_btc)} | Coinbase BTC: ${cbt(state.wallets.coinbase_btc)}
 - Coinbase USDT: ${cu(state.wallets.coinbase_usdt)} | MetaMask USDT: ${cu(state.wallets.metamask_usdt)}
 - UOB: ${csg(state.wallets.uob_sgd)} | Revolut: ${csg(state.wallets.revolut_sgd)} | BCA: ${cid(state.wallets.bca_idr)}
+- Brokerage cash (uninvested, ready to deploy): ${cu(brokerCashUSD(state.wallets,state.rates))} (${csg(state.wallets.broker_sgd||0)} SGD + ${cu(state.wallets.broker_usd||0)} USD)
+- Holdings (tracked by hand, not wallets): ${openHoldings(state.positions).length?`${cu(positionsValueUSD(openHoldings(state.positions),state.rates))} market value, ${cu(positionsCostUSD(openHoldings(state.positions),state.rates))} cost, unrealized ${cu(positionsPnL(openHoldings(state.positions),state.rates))}, realized ${cu(positionsRealizedUSD(state.positions,state.rates))} — ${openHoldings(state.positions).map(p=>`${p.ticker} (${assetType(p.assetType).label}, ${p.currency}) ${holdingCalc(p).qty.toFixed(3)} @ ${fmtNative(holdingPriceNative(p),p.currency)}`).join(", ")}`:"none held"}
 - This month: ${cu(md.inc)} income | ${cu(md.cost)} costs | ${cp(md.margin)} margin
 - FX: 1 USD = ${state.rates.USDSGD?.toFixed(4)} SGD = ${Math.round(state.rates.USDIDR||16200).toLocaleString()} IDR (live)
 - Recent: ${recentTx}
@@ -362,11 +511,16 @@ function Toast({msg,onDone}){
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard({st,bp,onDismissBanner,goals,onNavigate}){
-  const{wallets:w,rates,ledger,orders,btcCostBasis}=st;
+  const{wallets:w,rates,ledger,orders,btcCostBasis,positions}=st;
   const[stressPct,setStressPct]=useState(0); // 0, -10, -30, -50
   const stressBp=bp?bp*(1+stressPct/100):bp;
-  const nw=netWorth(w,bp,rates);
-  const stressNw=netWorth(w,stressBp,rates);
+  const nw=netWorth(w,bp,rates,positions);
+  const stressNw=netWorth(w,stressBp,rates,positions);
+  const openPos=openHoldings(positions);
+  const equityVal=positionsValueUSD(openPos,rates);
+  const equityCost=positionsCostUSD(openPos,rates);
+  const equityPnL=equityVal-equityCost;
+  const equityDay=positionsDayChangeUSD(openPos,rates);
   const btcTotal=totalBTC(w);
   const btcPnL=bp&&btcCostBasis?(bp-btcCostBasis)*btcTotal:0;
   const btcPnLPct=btcCostBasis?((bp||0)-btcCostBasis)/btcCostBasis*100:0;
@@ -424,6 +578,7 @@ function Dashboard({st,bp,onDismissBanner,goals,onNavigate}){
     {name:"USDT",value:totalUSDT(w),color:T.green},
     {name:"SGD",value:((w.uob_sgd||0)+(w.revolut_sgd||0))/rates.USDSGD,color:T.blue},
     {name:"IDR",value:(w.bca_idr||0)/(rates.USDIDR||16200),color:T.purple},
+    {name:"Equities",value:equityVal,color:"#0F766E"},
   ].filter(a=>a.value>0.01);
   const allocTotal=allocation.reduce((s,a)=>s+a.value,0);
  
@@ -648,6 +803,51 @@ function Dashboard({st,bp,onDismissBanner,goals,onNavigate}){
                 </div>
               )}
             </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Equities — tickers with live value, tap through to Wallets to edit ── */}
+      {(openPos.length>0||brokerCashUSD(w,rates)>0)&&(
+        <div style={{padding:"16px 16px 0"}}>
+          <Card>
+            <CardHeader title="Holdings"
+              action={
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <span style={{fontSize:11,color:equityPnL>=0?T.green:T.red,fontFamily:T.mono,fontWeight:600}}>
+                    {equityPnL>=0?"+":""}{cu(equityPnL)} {equityCost>0?`(${equityPnL>=0?"+":""}${(equityPnL/equityCost*100).toFixed(1)}%)`:""}
+                  </span>
+                  <button onClick={()=>onNavigate&&onNavigate("Wallets")} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:10,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>Manage →</button>
+                </div>
+              }/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",borderBottom:`1px solid ${T.border}`}}>
+              <Metric label="Market Value" value={cu(equityVal)} color={T.text} sub={`cost ${cu(equityCost)}`}/>
+              <Metric label="Today" value={equityDay?cu(equityDay):"—"} color={equityDay>=0?T.green:T.red}/>
+              <Metric label="Share of Net Worth" value={nw>0?(equityVal/nw*100).toFixed(1)+"%":"—"} color={T.blue}/>
+              <Metric label="Cash Idle" value={cu(brokerCashUSD(w,rates))} color={brokerCashUSD(w,rates)<0?T.red:"#0F766E"} sub="at the broker"/>
+            </div>
+            {openHoldings(positions).slice().sort((a,b)=>fxToUSD(holdingValueNative(b),b.currency,rates)-fxToUSD(holdingValueNative(a),a.currency,rates)).map((p,i,arr)=>{
+              const valNative=holdingValueNative(p),val=fxToUSD(valNative,p.currency,rates);
+              const pl=fxToUSD(holdingPnLNative(p),p.currency,rates);
+              return(
+                <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 20px",borderBottom:i<arr.length-1?`1px solid #F9FAFB`:"none"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:9,minWidth:0}}>
+                    <span style={{fontSize:13,fontWeight:800,color:T.text,fontFamily:T.sans}}>{p.ticker}</span>
+                    {p.dayChangePct!=null&&(
+                      <span style={{fontSize:10,fontWeight:600,color:p.dayChangePct>=0?T.green:T.red,background:p.dayChangePct>=0?"#F0FDF4":"#FEF2F2",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>
+                        {p.dayChangePct>=0?"↑":"↓"} {Math.abs(p.dayChangePct).toFixed(2)}%
+                      </span>
+                    )}
+                    <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{holdingCalc(p).qty.toFixed(3)} @ {fmtNative(holdingPriceNative(p),p.currency)}</span>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.text,fontFamily:T.mono}}>{cu(val)}</div>
+                    <div style={{fontSize:10,color:pl>=0?T.green:T.red,fontFamily:T.mono,fontWeight:600}}>{pl>=0?"+":""}{cu(pl)}</div>
+                    {p.currency!=="USD"&&<div style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>{fmtNative(valNative,p.currency)}</div>}
+                  </div>
+                </div>
+              );
+            })}
           </Card>
         </div>
       )}
@@ -1076,7 +1276,7 @@ function Ledger({st,bp,onDelete,onEdit,onBulkRecategorize}){
 function CalendarView({st,bp,onSaveTarget,goals}){
   const[year,setYear]=useState(2026);
   const[editingTarget,setEditingTarget]=useState(false);
-  const{ledger,rates,wallets:w}=st;
+  const{ledger,rates,wallets:w,positions}=st;
   const thisM=new Date().toISOString().slice(0,7);
   const today=new Date();
   const isCurrentYear=year===today.getFullYear();
@@ -1085,7 +1285,7 @@ function CalendarView({st,bp,onSaveTarget,goals}){
   const netWorthTarget=st.netWorthTarget||100000;
   const[targetDraft,setTargetDraft]=useState(netWorthTarget);
 
-  const nw=netWorth(w,bp,rates); // live current net worth, independent of browsed year
+  const nw=netWorth(w,bp,rates,positions); // live current net worth, independent of browsed year
 
   // Pace + trajectory always computed against the REAL current year, regardless of which year is browsed
   const realYear=today.getFullYear();
@@ -2451,6 +2651,8 @@ function TransferForm({wallets,rates,bp,onTransfer,showToast}){
     {key:"uob_sgd",       label:"UOB (SGD)",     currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
     {key:"revolut_sgd",   label:"Revolut (SGD)", currency:"SGD",  fmt:n=>"S$"+Number(n||0).toFixed(2)},
     {key:"bca_idr",       label:"BCA (IDR)",     currency:"IDR",  fmt:n=>"Rp "+Math.round(n||0).toLocaleString("id-ID")},
+    {key:"broker_usd",    label:"Brokerage (USD)",currency:"USD", fmt:n=>"$"+Number(n||0).toFixed(2)},
+    {key:"broker_sgd",    label:"Brokerage (SGD)",currency:"SGD", fmt:n=>"S$"+Number(n||0).toFixed(2)},
   ];
   const QUICK=[
     {from:"metamask_btc", to:"coinbase_btc",  label:"MetaMask → Coinbase BTC"},
@@ -2458,19 +2660,26 @@ function TransferForm({wallets,rates,bp,onTransfer,showToast}){
     {from:"uob_sgd",      to:"revolut_sgd",   label:"UOB → Revolut"},
     {from:"revolut_sgd",  to:"bca_idr",       label:"Revolut → BCA"},
     {from:"coinbase_btc", to:"metamask_btc",  label:"Coinbase → MetaMask BTC"},
+    {from:"uob_sgd",      to:"broker_usd",    label:"UOB → Brokerage USD"},
+    {from:"revolut_sgd",  to:"broker_usd",    label:"Revolut → Brokerage USD"},
+    {from:"broker_usd",   to:"uob_sgd",       label:"Brokerage → UOB"},
   ];
   const fromAcc=ACCOUNTS.find(a=>a.key===form.from);
   const toAcc=ACCOUNTS.find(a=>a.key===form.to);
   const amt=parseFloat(form.amount)||0;
   const bal=wallets[form.from]||0;
   const insufficient=amt>0&&amt>bal;
+  const toAmt=convertAmount(amt,fromAcc.currency,toAcc.currency,rates,bp);
+  const crossCurrency=fromAcc.currency!==toAcc.currency;
   const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%"};
   const lbl={fontSize:10,color:T.textM,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5,display:"block",fontFamily:T.mono,fontWeight:500};
   async function submit(){
     if(!amt||amt<=0||form.from===form.to||insufficient)return;
+    // The receiving leg is converted into the destination account's own
+    // currency — moving S$100 to a USD account must not credit $100.
     const entries=[
       {type:"transfer",category:"Transfer",amount:amt,currency:fromAcc.currency,account:form.from,label:`Transfer → ${toAcc.label}`,date:form.date},
-      {type:"transfer",category:"Transfer",amount:amt,currency:toAcc.currency, account:form.to,  label:`Transfer ← ${fromAcc.label}`,date:form.date},
+      {type:"transfer",category:"Transfer",amount:toAmt,currency:toAcc.currency, account:form.to,  label:`Transfer ← ${fromAcc.label}`,date:form.date},
     ];
     await onTransfer(entries);
     setForm(f=>({...f,amount:""}));
@@ -2513,7 +2722,12 @@ function TransferForm({wallets,rates,bp,onTransfer,showToast}){
         style={{background:T.text,color:"#fff",border:"none",borderRadius:5,padding:"9px 24px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
         Transfer →
       </button>
-      {form.from!==form.to&&amt>0&&!insufficient&&<div style={{marginTop:10,fontSize:11,color:T.textD,fontFamily:T.mono}}>{fromAcc?.fmt(amt)} · {fromAcc?.label} → {toAcc?.label}</div>}
+      {form.from!==form.to&&amt>0&&!insufficient&&(
+        <div style={{marginTop:10,fontSize:11,color:T.textD,fontFamily:T.mono}}>
+          {fromAcc?.fmt(amt)} · {fromAcc?.label} → {toAcc?.label}
+          {crossCurrency&&<span style={{color:T.textS}}> · arrives as {toAcc?.fmt(toAmt)}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -2528,6 +2742,8 @@ const RECON_ACCOUNTS = [
   {key:"uob_sgd",       label:"UOB SGD",       step:"0.01",     fmt:csg},
   {key:"revolut_sgd",   label:"Revolut SGD",   step:"0.01",     fmt:csg},
   {key:"bca_idr",       label:"BCA IDR",       step:"1000",     fmt:cid},
+  {key:"broker_usd",    label:"Brokerage USD", step:"0.01",     fmt:cu},
+  {key:"broker_sgd",    label:"Brokerage SGD", step:"0.01",     fmt:csg},
 ];
 
 function reconHealth(lastReconciled){
@@ -2617,11 +2833,558 @@ function Reconciliation({wallets,onReconcile,lastReconciled,showToast}){
   );
 }
 
-function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvailable,biometricRegistered,onEnableBiometric,onDisableBiometric}){
+// ── Holdings ─────────────────────────────────────────────────────────────────
+// Tracking only — holdings are not wired to wallets or the budget. Quantity and
+// basis come from each holding's transaction list, so you log buys and sells
+// rather than editing a share count by hand.
+function HoldingRow({p,rates,bp,wallets,expanded,onToggle,onEdit,onDelete,onAddLot,onDeleteLot}){
+  const calc=holdingCalc(p);
+  const at=assetType(p.assetType);
+  const px=holdingPriceNative(p);
+  const val=holdingValueNative(p);
+  const pnl=holdingPnLNative(p);
+  const pnlPct=calc.costNative>0?(pnl/calc.costNative*100):0;
+  const live=holdingHasLivePrice(p);
+  const manual=p.manualPrice!=null&&p.manualPrice!=="";
+  const closed=calc.qty<=0;
+  const mult=parseFloat(p.multiplier)||1;
+
+  const[lotKind,setLotKind]=useState("buy");
+  const[lotQty,setLotQty]=useState("");
+  const[lotPrice,setLotPrice]=useState("");
+  const[lotFee,setLotFee]=useState("");
+  const[lotDate,setLotDate]=useState(new Date().toISOString().slice(0,10));
+  const[lotNote,setLotNote]=useState("");
+  const[lotErr,setLotErr]=useState("");
+  const[adding,setAdding]=useState(false);
+  // Which cash pile this trade settles against. Defaults to the brokerage cash
+  // in the holding's own currency; "none" records the trade without moving cash.
+  const[lotCash,setLotCash]=useState(brokerCashForCurrency(p.currency));
+
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 9px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%",boxSizing:"border-box"};
+  const lbl={fontSize:9,color:T.textM,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono,display:"block",marginBottom:4};
+
+  // Gross value of the trade in the holding's currency, then what that costs
+  // the chosen cash account in ITS currency.
+  const lotGrossNative=(parseFloat(lotQty)||0)*(parseFloat(lotPrice)||0)*mult
+    +(lotKind==="sell"?-1:1)*(parseFloat(lotFee)||0);
+  const lotCashAcc=BROKER_CASH.find(b=>b.key===lotCash);
+  const lotCashImpact=lotCashAcc?convertAmount(lotGrossNative,p.currency,lotCashAcc.currency,rates,bp):0;
+  const cashBal=lotCashAcc?((wallets||{})[lotCashAcc.key]||0):0;
+  const shortOnCash=lotKind==="buy"&&lotCashAcc&&lotCashImpact>cashBal;
+
+  function submitLot(){
+    const q=parseFloat(lotQty)||0;
+    const pr=parseFloat(lotPrice)||0;
+    if(q<=0){setLotErr("Enter a quantity.");return;}
+    if(pr<=0){setLotErr("Enter the price you traded at.");return;}
+    if(lotKind==="sell"&&q>calc.qty+1e-9){setLotErr(`You only hold ${calc.qty.toFixed(4)}.`);return;}
+    onAddLot(p.id,{kind:lotKind,qty:q,price:pr,fee:parseFloat(lotFee)||0,tradeDate:lotDate||null,note:lotNote.trim()},lotCash==="none"?null:lotCash);
+    setLotQty("");setLotPrice("");setLotFee("");setLotNote("");setLotErr("");setAdding(false);
+  }
+
+  return(
+    <div style={{borderBottom:`1px solid #F9FAFB`}}>
+      <div onClick={onToggle} style={{padding:"13px 20px",display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,cursor:"pointer",background:expanded?"#FAFBFC":"transparent"}}>
+        <div style={{minWidth:0,flex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:11,color:at.color}}>{at.icon}</span>
+            <span style={{fontSize:14,fontWeight:800,color:closed?T.textD:T.text,fontFamily:T.sans,letterSpacing:"-0.01em",textDecoration:closed?"line-through":"none"}}>{p.ticker}</span>
+            <Badge color={at.color}>{at.label}</Badge>
+            {p.currency!=="USD"&&<Badge color={T.textM}>{p.currency}</Badge>}
+            {p.dayChangePct!=null&&live&&!closed&&(
+              <span style={{fontSize:10,fontWeight:600,color:p.dayChangePct>=0?T.green:T.red,background:p.dayChangePct>=0?"#F0FDF4":"#FEF2F2",padding:"2px 6px",borderRadius:3,fontFamily:T.mono}}>
+                {p.dayChangePct>=0?"↑":"↓"} {Math.abs(p.dayChangePct).toFixed(2)}%
+              </span>
+            )}
+            {manual&&<span style={{fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>manual</span>}
+            {!manual&&!live&&!closed&&<span style={{fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>no quote</span>}
+            {closed&&<span style={{fontSize:9,color:T.textD,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>closed</span>}
+          </div>
+          <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginTop:3}}>
+            {closed
+              ?`${calc.lotCount} transaction${calc.lotCount!==1?"s":""} · realized ${fmtNative(calc.realizedNative,p.currency)}`
+              :`${calc.qty.toFixed(4)} ${mult!==1?`× ${mult}`:""} @ ${fmtNative(px,p.currency)} · basis ${fmtNative(calc.avgCost,p.currency)}`}
+          </div>
+          {p.name&&<div style={{fontSize:10,color:T.textD,fontFamily:T.sans,marginTop:2}}>{p.name}{p.broker?` · ${p.broker}`:""}</div>}
+        </div>
+        <div style={{textAlign:"right",flexShrink:0}}>
+          {!closed&&<>
+            <div style={{fontSize:15,fontWeight:700,color:T.text,fontFamily:T.mono}}>{fmtNative(val,p.currency)}</div>
+            {p.currency!=="USD"&&<div style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>≈ {cu(fxToUSD(val,p.currency,rates))}</div>}
+            <div style={{fontSize:11,color:pnl>=0?T.green:T.red,fontFamily:T.mono,marginTop:2,fontWeight:600}}>
+              {pnl>=0?"+":""}{fmtNative(pnl,p.currency)} ({pnl>=0?"+":""}{pnlPct.toFixed(1)}%)
+            </div>
+          </>}
+          {calc.realizedNative!==0&&!closed&&(
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:2}}>realized {fmtNative(calc.realizedNative,p.currency)}</div>
+          )}
+          <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginTop:4}}>{expanded?"▴ hide":"▾ transactions"}</div>
+        </div>
+      </div>
+
+      {expanded&&(
+        <div style={{padding:"4px 20px 16px",background:"#FAFBFC"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:9,color:T.textM,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono}}>
+              Transactions {p.quoteSymbol?`· feed: ${p.quoteSymbol}`:""}
+            </span>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={e=>{e.stopPropagation();onEdit(p);}} style={{background:"none",border:"none",color:T.textM,cursor:"pointer",fontSize:10,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>✎ edit holding</button>
+              <button onClick={e=>{e.stopPropagation();onDelete(p.id);}} style={{background:"none",border:"none",color:T.red,cursor:"pointer",fontSize:10,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>delete</button>
+            </div>
+          </div>
+
+          {(p.lots||[]).length===0&&(
+            <div style={{fontSize:11,color:T.textD,fontFamily:T.mono,padding:"8px 0"}}>No transactions logged yet.</div>
+          )}
+          {[...(p.lots||[])].sort((a,b)=>String(b.tradeDate||"").localeCompare(String(a.tradeDate||""))).map(l=>(
+            <div key={l.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${T.white}`,gap:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+                <Badge color={l.kind==="sell"?T.red:T.green}>{l.kind}</Badge>
+                <span style={{fontSize:11,color:T.textS,fontFamily:T.mono}}>
+                  {Math.abs(parseFloat(l.qty)||0).toFixed(4)} @ {fmtNative(l.price,p.currency)}
+                </span>
+                <span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>{l.tradeDate||"—"}</span>
+                {parseFloat(l.fee)>0&&<span style={{fontSize:9,color:T.textD,fontFamily:T.mono}}>fee {fmtNative(l.fee,p.currency)}</span>}
+                {l.note&&<span style={{fontSize:9,color:T.textD,fontFamily:T.sans,fontStyle:"italic"}}>{l.note}</span>}
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                <span style={{fontSize:11,color:T.textM,fontFamily:T.mono}}>
+                  {fmtNative(Math.abs(parseFloat(l.qty)||0)*(parseFloat(l.price)||0)*mult,p.currency)}
+                </span>
+                <button onClick={()=>onDeleteLot(p.id,l.id)} style={{background:"none",border:"none",color:T.textD,cursor:"pointer",fontSize:14}}>×</button>
+              </div>
+            </div>
+          ))}
+
+          {!adding?(
+            <button onClick={()=>setAdding(true)} style={{marginTop:10,background:T.white,color:T.textS,border:`1px solid ${T.borderS}`,borderRadius:4,padding:"6px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>
+              + Add transaction
+            </button>
+          ):(
+            <div style={{marginTop:12,background:T.white,border:`1px solid ${T.border}`,borderRadius:6,padding:"12px 14px"}}>
+              <div style={{display:"flex",gap:6,marginBottom:10}}>
+                {[{k:"buy",t:"Buy / add"},{k:"sell",t:"Sell / reduce"}].map(m=>(
+                  <button key={m.k} onClick={()=>setLotKind(m.k)}
+                    style={{background:lotKind===m.k?(m.k==="sell"?T.red:T.green):"transparent",color:lotKind===m.k?"#fff":T.textM,border:`1px solid ${lotKind===m.k?(m.k==="sell"?T.red:T.green):T.border}`,borderRadius:14,padding:"5px 13px",fontSize:11,fontWeight:lotKind===m.k?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                    {m.t}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+                <div>
+                  <label style={lbl}>Quantity</label>
+                  <input type="number" step="0.0001" value={lotQty} onChange={e=>setLotQty(e.target.value)} placeholder="2.5" style={inp} autoFocus/>
+                </div>
+                <div>
+                  <label style={lbl}>Price ({p.currency})</label>
+                  <input type="number" step="0.0001" value={lotPrice} onChange={e=>setLotPrice(e.target.value)} placeholder="250" style={inp}/>
+                </div>
+                <div>
+                  <label style={lbl}>Fee</label>
+                  <input type="number" step="0.01" value={lotFee} onChange={e=>setLotFee(e.target.value)} placeholder="0" style={inp}/>
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:8,marginBottom:10}}>
+                <div>
+                  <label style={lbl}>Date</label>
+                  <input type="date" value={lotDate} onChange={e=>setLotDate(e.target.value)} style={inp}/>
+                </div>
+                <div>
+                  <label style={lbl}>Note (optional)</label>
+                  <input value={lotNote} onChange={e=>setLotNote(e.target.value)} placeholder="why" style={inp}/>
+                </div>
+              </div>
+              <label style={lbl}>{lotKind==="sell"?"Proceeds go to":"Paid from"}</label>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+                {[...BROKER_CASH,{key:"none",label:"Don't touch cash"}].map(b=>(
+                  <button key={b.key} onClick={()=>setLotCash(b.key)}
+                    style={{background:lotCash===b.key?T.text:"transparent",color:lotCash===b.key?"#fff":T.textM,border:`1px solid ${lotCash===b.key?T.text:T.border}`,borderRadius:14,padding:"4px 12px",fontSize:10,fontWeight:lotCash===b.key?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                    {b.key==="none"?b.label:b.label.replace("Brokerage Cash ","")}
+                  </button>
+                ))}
+              </div>
+              {parseFloat(lotQty)>0&&parseFloat(lotPrice)>0&&(
+                <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginBottom:10,lineHeight:1.7}}>
+                  {lotKind==="sell"?"Proceeds":"Cost"}: {fmtNative(Math.abs(lotGrossNative),p.currency)}
+                  {mult!==1?` (× ${mult} multiplier)`:""}
+                  {lotCashAcc&&(
+                    <><br/><span style={{color:lotKind==="sell"?T.green:T.red}}>
+                      {lotKind==="sell"?"+":"−"}{fmtNative(Math.abs(lotCashImpact),lotCashAcc.currency)} {lotCashAcc.currency} cash
+                    </span>
+                    <span style={{color:T.textD}}> · balance {fmtNative(cashBal,lotCashAcc.currency)}</span></>
+                  )}
+                  {!lotCashAcc&&<><br/><span style={{color:T.textD}}>Cash balances left untouched</span></>}
+                </div>
+              )}
+              {shortOnCash&&(
+                <div style={{fontSize:10,color:T.gold,fontFamily:T.mono,marginBottom:10,lineHeight:1.6}}>
+                  That's more than your {lotCashAcc.currency} cash — it'll go negative. Transfer from a bank account first, or pick "Don't touch cash".
+                </div>
+              )}
+              {lotErr&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:8}}>{lotErr}</div>}
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={submitLot} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"7px 16px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>Log it</button>
+                <button onClick={()=>{setAdding(false);setLotErr("");}} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:4,padding:"7px 14px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Positions({positions,rates,bp,wallets,quotesAt,quoteLoading,onAdd,onUpdate,onDelete,onAddLot,onDeleteLot,onRefreshQuotes}){
+  const[open,setOpen]=useState(false);
+  const[expandedId,setExpandedId]=useState(null);
+  const[editingId,setEditingId]=useState(null);
+  const[showClosed,setShowClosed]=useState(false);
+  const[typeFilter,setTypeFilter]=useState("all");
+
+  // holding form
+  const[fTicker,setFTicker]=useState("");
+  const[fName,setFName]=useState("");
+  const[fType,setFType]=useState("stock");
+  const[fCurrency,setFCurrency]=useState("USD");
+  const[fBroker,setFBroker]=useState("IBKR");
+  const[fMultiplier,setFMultiplier]=useState("1");
+  const[fQuoteSymbol,setFQuoteSymbol]=useState("");
+  const[fManualPrice,setFManualPrice]=useState("");
+  const[fNote,setFNote]=useState("");
+  const[advanced,setAdvanced]=useState(false);
+  // opening transaction (only when creating)
+  const[fQty,setFQty]=useState("");
+  const[fPrice,setFPrice]=useState("");
+  const[fFee,setFFee]=useState("");
+  const[fDate,setFDate]=useState(new Date().toISOString().slice(0,10));
+  const[fEntryMode,setFEntryMode]=useState("amount"); // amount invested, or quantity
+  const[fAmount,setFAmount]=useState("");
+  const[fCash,setFCash]=useState("broker_usd");
+  const[err,setErr]=useState("");
+
+  const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"8px 10px",fontSize:12,fontFamily:T.mono,outline:"none",width:"100%",boxSizing:"border-box"};
+  const lbl={fontSize:9,color:T.textM,letterSpacing:"0.1em",textTransform:"uppercase",fontFamily:T.mono,display:"block",marginBottom:4};
+
+  const live=openHoldings(positions);
+  const closed=(positions||[]).filter(p=>holdingCalc(p).qty<=0);
+  const shown=(showClosed?[...live,...closed]:live)
+    .filter(p=>typeFilter==="all"||p.assetType===typeFilter)
+    .sort((a,b)=>fxToUSD(holdingValueNative(b),b.currency,rates)-fxToUSD(holdingValueNative(a),a.currency,rates));
+
+  const totalUSD=positionsValueUSD(live,rates);
+  const costUSD=positionsCostUSD(live,rates);
+  const pnlUSD=totalUSD-costUSD;
+  const dayUSD=positionsDayChangeUSD(live,rates);
+  const realizedUSD=positionsRealizedUSD(positions,rates);
+
+  // per-currency subtotals, so mixed books stay legible
+  const byCurrency=HOLDING_CURRENCIES.map(c=>({
+    c,val:live.filter(p=>p.currency===c).reduce((s,p)=>s+holdingValueNative(p),0),
+    n:live.filter(p=>p.currency===c).length,
+  })).filter(x=>x.n>0);
+
+  const typesPresent=ASSET_TYPES.filter(a=>(positions||[]).some(p=>p.assetType===a.k));
+
+  function reset(){
+    setEditingId(null);setFTicker("");setFName("");setFType("stock");setFCurrency("USD");
+    setFBroker("IBKR");setFMultiplier("1");setFQuoteSymbol("");setFManualPrice("");setFNote("");
+    setFQty("");setFPrice("");setFFee("");setFAmount("");setFEntryMode("amount");setFCash("broker_usd");
+    setFDate(new Date().toISOString().slice(0,10));setErr("");setAdvanced(false);
+  }
+  function startNew(){ reset();setOpen(true); }
+  function startEdit(p){
+    setEditingId(p.id);setFTicker(p.ticker||"");setFName(p.name||"");
+    setFType(p.assetType||"stock");setFCurrency(p.currency||"USD");setFBroker(p.broker||"IBKR");
+    setFMultiplier(String(p.multiplier||1));setFQuoteSymbol(p.quoteSymbol||"");
+    setFManualPrice(p.manualPrice!=null?String(p.manualPrice):"");setFNote(p.note||"");
+    setErr("");setAdvanced(!!(p.quoteSymbol||p.manualPrice||(parseFloat(p.multiplier)||1)!==1));
+    setOpen(true);
+  }
+
+  function submit(){
+    const ticker=fTicker.trim().toUpperCase();
+    if(!ticker){setErr("Give it a ticker or symbol.");return;}
+    const mult=parseFloat(fMultiplier)||1;
+    const meta={
+      ticker,name:fName.trim(),assetType:fType,currency:fCurrency,
+      broker:fBroker.trim(),multiplier:mult,
+      quoteSymbol:fQuoteSymbol.trim().toUpperCase()||null,
+      manualPrice:fManualPrice.trim()===""?null:(parseFloat(fManualPrice)||0),
+      note:fNote.trim(),
+    };
+    if(editingId){ onUpdate(editingId,meta);reset();setOpen(false);return; }
+
+    // creating — the opening transaction comes with it
+    const price=parseFloat(fPrice)||0;
+    let qty;
+    if(fEntryMode==="amount"){
+      const amt=parseFloat(fAmount)||0;
+      if(amt<=0){setErr("Enter how much you put in.");return;}
+      if(price<=0){setErr("Enter the price you bought at, so quantity can be worked out.");return;}
+      qty=amt/(price*mult);
+    }else{
+      qty=parseFloat(fQty)||0;
+      if(qty<=0){setErr("Enter a quantity.");return;}
+      if(price<=0){setErr("Enter the price you bought at.");return;}
+    }
+    onAdd(meta,{kind:"buy",qty,price,fee:parseFloat(fFee)||0,tradeDate:fDate||null,note:""},fCash==="none"?null:fCash);
+    reset();setOpen(false);
+  }
+
+  const multiplierNum=parseFloat(fMultiplier)||1;
+  const derivedQty=(fEntryMode==="amount"&&parseFloat(fAmount)>0&&parseFloat(fPrice)>0)
+    ?parseFloat(fAmount)/(parseFloat(fPrice)*multiplierNum):null;
+  const openQty=fEntryMode==="amount"?(derivedQty||0):(parseFloat(fQty)||0);
+  const openCost=openQty*(parseFloat(fPrice)||0)*multiplierNum+(parseFloat(fFee)||0);
+  const openCashAcc=BROKER_CASH.find(b=>b.key===fCash);
+  const openCashImpact=openCashAcc?convertAmount(openCost,fCurrency,openCashAcc.currency,rates,bp):0;
+  const openShort=openCashAcc&&openCashImpact>((wallets||{})[openCashAcc.key]||0);
+
+  return(
+    <Card style={{marginBottom:16}}>
+      <CardHeader title="Holdings"
+        action={
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {live.length>0&&(
+              <button onClick={onRefreshQuotes} disabled={quoteLoading}
+                style={{background:"#FEF3C7",color:T.gold,border:`1px solid #FDE68A`,borderRadius:4,padding:"5px 10px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>
+                {quoteLoading?"…":"↻ Prices"}
+              </button>
+            )}
+            <button onClick={()=>open?(setOpen(false),reset()):startNew()}
+              style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"5px 12px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>
+              {open?"Close":"+ Add Holding"}
+            </button>
+          </div>
+        }/>
+
+      {live.length>0&&(
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",borderBottom:`1px solid ${T.border}`}}>
+            <Metric label="Market Value" value={cu(totalUSD)} color={T.text} sub={`cost ${cu(costUSD)}`}/>
+            <Metric label="Unrealized" value={cu(pnlUSD)} color={pnlUSD>=0?T.green:T.red} sub={costUSD>0?`${pnlUSD>=0?"+":""}${(pnlUSD/costUSD*100).toFixed(1)}%`:undefined}/>
+            <Metric label="Today" value={dayUSD?cu(dayUSD):"—"} color={dayUSD>=0?T.green:T.red} sub={quotesAt?`as of ${quotesAt}`:"no prices yet"}/>
+            {realizedUSD!==0&&<Metric label="Realized" value={cu(realizedUSD)} color={realizedUSD>=0?T.green:T.red} sub="closed out"/>}
+            <Metric label="In IDR" value={cid(totalUSD*(rates.USDIDR||16200))} color={T.gold}/>
+          </div>
+          {byCurrency.length>1&&(
+            <div style={{display:"flex",gap:14,flexWrap:"wrap",padding:"9px 20px",borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"}}>
+              {byCurrency.map(x=>(
+                <span key={x.c} style={{fontSize:10,color:T.textM,fontFamily:T.mono}}>
+                  {x.c}: <span style={{color:T.textS,fontWeight:600}}>{fmtNative(x.val,x.c)}</span> <span style={{color:T.textD}}>({x.n})</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {open&&(
+        <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,background:"#FAFBFC"}}>
+          <label style={lbl}>What kind of thing is it?</label>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+            {ASSET_TYPES.map(a=>(
+              <button key={a.k} onClick={()=>{setFType(a.k);if(a.k==="contract"&&fMultiplier==="1")setFMultiplier("100");}}
+                style={{display:"flex",alignItems:"center",gap:5,background:fType===a.k?a.color:"transparent",color:fType===a.k?"#fff":T.textM,border:`1px solid ${fType===a.k?a.color:T.border}`,borderRadius:14,padding:"5px 12px",fontSize:11,fontWeight:fType===a.k?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                <span>{a.icon}</span>{a.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1.4fr",gap:10,marginBottom:10}}>
+            <div>
+              <label style={lbl}>Ticker / symbol</label>
+              <input value={fTicker} onChange={e=>setFTicker(e.target.value.toUpperCase())} placeholder={fType==="crypto"?"BTC":fType==="contract"?"AAPL 250C":"AAPL"} style={inp} autoFocus/>
+            </div>
+            <div>
+              <label style={lbl}>Name (optional)</label>
+              <input value={fName} onChange={e=>setFName(e.target.value)} placeholder="what it is, in your words" style={inp}/>
+            </div>
+          </div>
+
+          <label style={lbl}>Priced in</label>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            {HOLDING_CURRENCIES.map(c=>(
+              <button key={c} onClick={()=>{setFCurrency(c);if(fCash!=="none")setFCash(brokerCashForCurrency(c));}}
+                style={{background:fCurrency===c?T.text:"transparent",color:fCurrency===c?"#fff":T.textM,border:`1px solid ${fCurrency===c?T.text:T.border}`,borderRadius:14,padding:"5px 15px",fontSize:11,fontWeight:fCurrency===c?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                {c}
+              </button>
+            ))}
+            <span style={{fontSize:10,color:T.textD,fontFamily:T.mono,alignSelf:"center",marginLeft:4}}>
+              converted at live FX for net worth
+            </span>
+          </div>
+
+          {!editingId&&(
+            <>
+              <div style={{height:1,background:T.border,margin:"4px 0 14px"}}/>
+              <label style={lbl}>Opening transaction</label>
+              <div style={{display:"flex",gap:6,marginBottom:10}}>
+                {[{k:"amount",t:`I put in ${fCurrency}…`},{k:"qty",t:"I hold N of them"}].map(m=>(
+                  <button key={m.k} onClick={()=>setFEntryMode(m.k)}
+                    style={{background:fEntryMode===m.k?T.text:"transparent",color:fEntryMode===m.k?"#fff":T.textM,border:`1px solid ${fEntryMode===m.k?T.text:T.border}`,borderRadius:14,padding:"5px 13px",fontSize:11,fontWeight:fEntryMode===m.k?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                    {m.t}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+                {fEntryMode==="amount"?(
+                  <div>
+                    <label style={lbl}>Amount ({fCurrency})</label>
+                    <input type="number" step="0.01" value={fAmount} onChange={e=>setFAmount(e.target.value)} placeholder="500" style={inp}/>
+                  </div>
+                ):(
+                  <div>
+                    <label style={lbl}>Quantity</label>
+                    <input type="number" step="0.0001" value={fQty} onChange={e=>setFQty(e.target.value)} placeholder="2.5" style={inp}/>
+                  </div>
+                )}
+                <div>
+                  <label style={lbl}>Price ({fCurrency})</label>
+                  <input type="number" step="0.0001" value={fPrice} onChange={e=>setFPrice(e.target.value)} placeholder="250" style={inp}/>
+                </div>
+                <div>
+                  <label style={lbl}>Fee</label>
+                  <input type="number" step="0.01" value={fFee} onChange={e=>setFFee(e.target.value)} placeholder="0" style={inp}/>
+                </div>
+              </div>
+              {derivedQty!=null&&(
+                <div style={{fontSize:11,color:T.textM,fontFamily:T.mono,marginBottom:10}}>
+                  = {derivedQty.toFixed(4)} {fType==="contract"?"contracts":fType==="crypto"?"units":"shares"}
+                  {multiplierNum!==1?` (× ${multiplierNum} multiplier)`:""}
+                </div>
+              )}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div>
+                  <label style={lbl}>Trade date</label>
+                  <input type="date" value={fDate} onChange={e=>setFDate(e.target.value)} style={inp}/>
+                </div>
+                <div>
+                  <label style={lbl}>Broker / venue</label>
+                  <input value={fBroker} onChange={e=>setFBroker(e.target.value)} placeholder="IBKR" style={inp}/>
+                </div>
+              </div>
+              <label style={lbl}>Paid from</label>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+                {[...BROKER_CASH,{key:"none",label:"Don't touch cash"}].map(b=>(
+                  <button key={b.key} onClick={()=>setFCash(b.key)}
+                    style={{background:fCash===b.key?T.text:"transparent",color:fCash===b.key?"#fff":T.textM,border:`1px solid ${fCash===b.key?T.text:T.border}`,borderRadius:14,padding:"4px 12px",fontSize:10,fontWeight:fCash===b.key?600:400,cursor:"pointer",fontFamily:T.mono}}>
+                    {b.key==="none"?b.label:b.label.replace("Brokerage Cash ","")}
+                  </button>
+                ))}
+              </div>
+              {openCashAcc&&openCost>0&&(
+                <div style={{fontSize:11,fontFamily:T.mono,marginBottom:10,lineHeight:1.7}}>
+                  <span style={{color:T.red}}>−{fmtNative(Math.abs(openCashImpact),openCashAcc.currency)} {openCashAcc.currency} cash</span>
+                  <span style={{color:T.textD}}> · balance {fmtNative((wallets||{})[openCashAcc.key]||0,openCashAcc.currency)}</span>
+                  {openShort&&<><br/><span style={{color:T.gold}}>More than you hold in {openCashAcc.currency} cash — transfer from a bank first, or pick "Don't touch cash".</span></>}
+                </div>
+              )}
+              <div style={{fontSize:10,color:T.textD,fontFamily:T.mono,marginBottom:12,lineHeight:1.6}}>
+                You can log more buys and sells against this holding afterwards — the basis re-averages itself.
+              </div>
+            </>
+          )}
+
+          {editingId&&(
+            <div style={{marginBottom:10}}>
+              <label style={lbl}>Broker / venue</label>
+              <input value={fBroker} onChange={e=>setFBroker(e.target.value)} placeholder="IBKR" style={inp}/>
+            </div>
+          )}
+
+          <button onClick={()=>setAdvanced(a=>!a)} style={{background:"none",border:"none",color:T.textM,cursor:"pointer",fontSize:10,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase",padding:"4px 0",marginBottom:advanced?8:12}}>
+            {advanced?"▴":"▾"} Pricing & advanced
+          </button>
+
+          {advanced&&(
+            <div style={{background:T.white,border:`1px solid ${T.border}`,borderRadius:6,padding:"12px 14px",marginBottom:12}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div>
+                  <label style={lbl}>Multiplier</label>
+                  <input type="number" step="1" value={fMultiplier} onChange={e=>setFMultiplier(e.target.value)} placeholder="1" style={inp}/>
+                  <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:3}}>contracts: usually 100</div>
+                </div>
+                <div>
+                  <label style={lbl}>Feed symbol (optional)</label>
+                  <input value={fQuoteSymbol} onChange={e=>setFQuoteSymbol(e.target.value.toUpperCase())} placeholder={fType==="crypto"?"BINANCE:BTCUSDT":"D05.SI"} style={inp}/>
+                  <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:3}}>if it differs from the ticker</div>
+                </div>
+              </div>
+              <div>
+                <label style={lbl}>Manual price ({fCurrency}) — overrides the feed</label>
+                <input type="number" step="0.0001" value={fManualPrice} onChange={e=>setFManualPrice(e.target.value)} placeholder="leave blank to track live" style={inp}/>
+                <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:3}}>for contracts and anything with no public quote</div>
+              </div>
+              <div style={{marginTop:10}}>
+                <label style={lbl}>Note</label>
+                <input value={fNote} onChange={e=>setFNote(e.target.value)} placeholder="thesis / why you hold it" style={inp}/>
+              </div>
+            </div>
+          )}
+
+          {err&&<div style={{fontSize:11,color:T.red,fontFamily:T.mono,marginBottom:10}}>{err}</div>}
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={submit} style={{background:T.text,color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:T.sans}}>
+              {editingId?"Save holding":"Add holding"}
+            </button>
+            <button onClick={()=>{reset();setOpen(false);}} style={{background:T.white,color:T.textM,border:`1px solid ${T.borderS}`,borderRadius:4,padding:"8px 16px",fontSize:12,cursor:"pointer",fontFamily:T.sans}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {typesPresent.length>1&&live.length>0&&(
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",padding:"10px 20px",borderBottom:`1px solid ${T.border}`}}>
+          <button onClick={()=>setTypeFilter("all")}
+            style={{background:typeFilter==="all"?T.text:"transparent",color:typeFilter==="all"?"#fff":T.textM,border:`1px solid ${typeFilter==="all"?T.text:T.border}`,borderRadius:14,padding:"4px 12px",fontSize:10,cursor:"pointer",fontFamily:T.mono}}>All</button>
+          {typesPresent.map(a=>(
+            <button key={a.k} onClick={()=>setTypeFilter(a.k)}
+              style={{background:typeFilter===a.k?a.color:"transparent",color:typeFilter===a.k?"#fff":T.textM,border:`1px solid ${typeFilter===a.k?a.color:T.border}`,borderRadius:14,padding:"4px 12px",fontSize:10,cursor:"pointer",fontFamily:T.mono}}>
+              {a.icon} {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {shown.length===0&&!open&&(
+        <div style={{padding:"34px 20px",textAlign:"center",color:T.textD,fontSize:12,fontFamily:T.mono,lineHeight:1.7}}>
+          Nothing held yet.<br/>Stocks, ETFs, digital assets, contracts — in USD, SGD or IDR.
+        </div>
+      )}
+
+      {shown.map(p=>(
+        <HoldingRow key={p.id} p={p} rates={rates} bp={bp} wallets={wallets}
+          expanded={expandedId===p.id}
+          onToggle={()=>setExpandedId(cur=>cur===p.id?null:p.id)}
+          onEdit={startEdit} onDelete={onDelete}
+          onAddLot={onAddLot} onDeleteLot={onDeleteLot}/>
+      ))}
+
+      {closed.length>0&&(
+        <div style={{padding:"10px 20px",background:"#FAFBFC",borderTop:`1px solid ${T.border}`}}>
+          <button onClick={()=>setShowClosed(s=>!s)} style={{background:"none",border:"none",color:T.textM,cursor:"pointer",fontSize:10,fontFamily:T.mono,letterSpacing:"0.06em",textTransform:"uppercase"}}>
+            {showClosed?"▴ hide":"▾ show"} {closed.length} closed position{closed.length!==1?"s":""} · realized {cu(positionsRealizedUSD(closed,rates))}
+          </button>
+        </div>
+      )}
+
+      {!STOCK_API_KEY&&live.some(p=>p.manualPrice==null||p.manualPrice==="")&&(
+        <div style={{padding:"11px 20px",background:"#FEF3C7",borderTop:`1px solid #FDE68A`,fontSize:10,color:T.gold,fontFamily:T.mono,lineHeight:1.6}}>
+          No price feed key set — these show at cost basis. Add REACT_APP_FINNHUB_KEY for live prices, or set a manual price per holding.
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvailable,biometricRegistered,onEnableBiometric,onDisableBiometric,positions,quotesAt,quoteLoading,onAddPosition,onUpdatePosition,onDeletePosition,onAddLot,onDeleteLot,onRefreshQuotes}){
   const{wallets:w,rates,btcCostBasis}=st;
-  const nw=netWorth(w,bp,rates);
+  const nw=netWorth(w,bp,rates,positions);
   const btcTotal=totalBTC(w);
   const btcPnL=bp&&btcCostBasis?(bp-btcCostBasis)*btcTotal:0;
+  const equityVal=positionsValueUSD(openHoldings(positions),rates);
   const inp={background:T.white,border:`1px solid ${T.borderS}`,color:T.text,borderRadius:4,padding:"7px 10px",fontSize:12,width:150,textAlign:"right",fontFamily:T.mono,outline:"none"};
   return(
     <div style={{padding:"20px 16px"}}>
@@ -2629,8 +3392,34 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
         <Metric label="Net Worth" value={bp?cu(nw):"—"} color={T.text} sub={bp?csg(nw*rates.USDSGD)+" SGD":undefined}/>
         <Metric label="BTC Holdings" value={cbt(btcTotal)} color={T.gold} sub={bp?cu(btcTotal*bp):undefined}/>
         <Metric label="BTC P&L" value={bp?cu(btcPnL):"—"} color={btcPnL>=0?T.green:T.red} sub={btcCostBasis?`basis ${cu(btcCostBasis)}/BTC`:undefined}/>
+        <Metric label="Broker Cash" value={cu(brokerCashUSD(w,rates))} color={brokerCashUSD(w,rates)<0?T.red:"#0F766E"} sub="uninvested"/>
+        <Metric label="Holdings" value={equityVal?cu(equityVal):"—"} color={T.blue} sub={openHoldings(positions).length?`${openHoldings(positions).length} position${openHoldings(positions).length!==1?"s":""}`:"none yet"}/>
         <Metric label="Net Worth IDR" value={bp?cid(nw*(rates.USDIDR||16200)):"—"} color={T.gold}/>
       </div>
+
+      <Card style={{marginBottom:16}}>
+        <CardHeader title="Brokerage Cash"
+          action={<span style={{fontSize:10,color:T.textD,fontFamily:T.mono}}>
+            cash {cu(brokerCashUSD(w,rates))} + holdings {cu(equityVal)} = {cu(brokerCashUSD(w,rates)+equityVal)}
+          </span>}/>
+        <div style={{padding:"10px 20px 4px",fontSize:10,color:T.textM,fontFamily:T.mono,lineHeight:1.6}}>
+          Uninvested money sitting at the broker. Fund it with a transfer from a bank account below; buying a holding draws it down, selling tops it back up.
+        </div>
+        {BROKER_CASH.map(b=>(
+          <div key={b.key} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 20px",borderBottom:`1px solid #F9FAFB`}}>
+            <div>
+              <div style={{fontSize:12,color:T.textS,fontFamily:T.mono}}>{b.label}</div>
+              {b.currency==="SGD"&&<div style={{fontSize:10,color:T.textD,marginTop:2,fontFamily:T.mono}}>≈ {cu((w[b.key]||0)/(rates.USDSGD||1.354))}</div>}
+              {(w[b.key]||0)<0&&<div style={{fontSize:10,color:T.red,marginTop:2,fontFamily:T.mono}}>negative — you're on margin or a trade wasn't funded</div>}
+            </div>
+            <input type="number" step="0.01" value={w[b.key]||0} onChange={e=>onUpdate("wallets",{...w,[b.key]:parseFloat(e.target.value)||0})} style={{...inp,color:(w[b.key]||0)<0?T.red:T.text}}/>
+          </div>
+        ))}
+      </Card>
+
+      <Positions positions={positions||[]} rates={rates} bp={bp} wallets={w} quotesAt={quotesAt} quoteLoading={quoteLoading}
+        onAdd={onAddPosition} onUpdate={onUpdatePosition} onDelete={onDeletePosition}
+        onAddLot={onAddLot} onDeleteLot={onDeleteLot} onRefreshQuotes={onRefreshQuotes}/>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
         <Card>
           <CardHeader title="Crypto Wallets"/>
@@ -2682,6 +3471,8 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
           {label:"USDT (Coinbase + MetaMask)",val:totalUSDT(w),display:cu(totalUSDT(w)),color:T.green},
           {label:"SGD (UOB + Revolut)",val:((w.uob_sgd||0)+(w.revolut_sgd||0))/rates.USDSGD,display:csg((w.uob_sgd||0)+(w.revolut_sgd||0)),color:T.blue},
           {label:"IDR (BCA)",val:(w.bca_idr||0)/(rates.USDIDR||16200),display:cid(w.bca_idr),color:T.purple},
+          ...(brokerCashUSD(w,rates)?[{label:"Brokerage cash (uninvested)",val:brokerCashUSD(w,rates),display:BROKER_CASH.filter(b=>w[b.key]).map(b=>fmtNative(w[b.key],b.currency)).join(" + "),color:"#0F766E"}]:[]),
+          ...(equityVal?[{label:`Holdings (${openHoldings(positions).map(p=>p.ticker).join(", ")})`,val:equityVal,display:`${openHoldings(positions).length} position${openHoldings(positions).length!==1?"s":""}`,color:T.blue}]:[]),
         ].map(r=>(
           <div key={r.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 20px",borderBottom:`1px solid #F9FAFB`}}>
             <div>
@@ -3483,6 +4274,9 @@ export default function App(){
   const[planned,setPlanned]=useState([]);
   const[goals,setGoals]=useState([]);
   const[scratchpad,setScratchpad]=useState("");
+  const[positions,setPositions]=useState([]);
+  const[quotesAt,setQuotesAt]=useState(null);
+  const[quoteLoading,setQuoteLoading]=useState(false);
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
   const[rates,setRates]=useState(DEFAULT_RATES);
   const[btcCostBasis,setBtcCostBasis]=useState(0);
@@ -3568,7 +4362,7 @@ export default function App(){
         if(walletData&&walletData[0]){
           const wd=walletData[0];
           setWalletRowId(wd.id);
-          finalWallets={coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0};
+          finalWallets={coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0,broker_usd:parseFloat(wd.broker_usd)||0,broker_sgd:parseFloat(wd.broker_sgd)||0};
           setWallets(finalWallets);
         }
         try{
@@ -3589,6 +4383,63 @@ export default function App(){
           const plannedData=await sb("planned_items?order=created_at.desc");
           if(plannedData)setPlanned(plannedData.map(p=>({...p,amountIDR:parseFloat(p.amount_idr)||0,purchased:p.purchased===true,targetMonth:p.target_month||null})));
         }catch(planErr){ console.error("Planned items load error (table may not exist yet):",planErr); }
+
+        let finalPositions=[];
+        try{
+          const posData=await sb("positions?order=created_at.desc");
+          if(posData){
+            // Transactions live in their own table and are grouped onto each
+            // holding; quantity and basis are derived, never stored.
+            let lotData=[];
+            try{ lotData=await sb("position_lots?order=trade_date.asc")||[]; }
+            catch(lotErr){ console.error("Lots load error (table may not exist yet):",lotErr); }
+            const lotsByPos={};
+            lotData.forEach(l=>{
+              const k=String(l.position_id);
+              (lotsByPos[k]=lotsByPos[k]||[]).push({
+                id:l.id,kind:l.kind==="sell"?"sell":"buy",
+                qty:parseFloat(l.qty)||0,price:parseFloat(l.price)||0,fee:parseFloat(l.fee)||0,
+                tradeDate:l.trade_date||null,note:l.note||"",
+              });
+            });
+            const mapped=posData.map(p=>{
+              const lots=lotsByPos[String(p.id)]||[];
+              const base={
+                id:p.id,ticker:(p.ticker||"").toUpperCase(),name:p.name||"",
+                assetType:p.asset_type||"stock",currency:p.currency||"USD",
+                broker:p.broker||"",multiplier:parseFloat(p.multiplier)||1,
+                quoteSymbol:p.quote_symbol||null,
+                manualPrice:p.manual_price!=null?parseFloat(p.manual_price):null,
+                note:p.note||"",lots,
+                lastPrice:p.last_price!=null?parseFloat(p.last_price):null,
+                prevClose:p.prev_close!=null?parseFloat(p.prev_close):null,
+                dayChangePct:(p.last_price!=null&&p.prev_close)?((parseFloat(p.last_price)-parseFloat(p.prev_close))/parseFloat(p.prev_close)*100):null,
+              };
+              return{...base,calc:computeHolding(lots,base.multiplier)};
+            });
+            setPositions(mapped);
+            finalPositions=mapped;
+            // Pull fresh quotes right after load so the Dashboard opens with
+            // today's prices, not whatever was cached on the last visit.
+            const wanted=quotableSymbols(mapped);
+            if(wanted.length>0){
+              const q=await fetchQuotes(wanted);
+              if(Object.keys(q).length>0){
+                finalPositions=mapped.map(p=>{
+                  const hit=q[quoteSymbolFor(p)];
+                  return hit?{...p,lastPrice:hit.price,prevClose:hit.prevClose,dayChangePct:hit.dayChangePct}:p;
+                });
+                setPositions(finalPositions);
+                setQuotesAt(new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}));
+                // cache so values render instantly next unlock, even offline
+                for(const p of mapped){
+                  const hit=q[quoteSymbolFor(p)];
+                  if(hit)try{ await sb(`positions?id=eq.${p.id}`,"PATCH",{last_price:hit.price,prev_close:hit.prevClose,last_price_at:new Date().toISOString()}); }catch{}
+                }
+              }
+            }
+          }
+        }catch(posErr){ console.error("Positions load error (table may not exist yet):",posErr); }
 
         try{
           const goalsData=await sb("goals?order=created_at.desc");
@@ -3613,7 +4464,7 @@ export default function App(){
           const todayStr=new Date().toISOString().slice(0,10);
           const finalRates=fx||DEFAULT_RATES;
           const finalBp=price||null;
-          const currentNW=netWorth(finalWallets,finalBp,finalRates);
+          const currentNW=netWorth(finalWallets,finalBp,finalRates,finalPositions);
           const lastVisitSetting=settingsData&&settingsData.find(s=>s.key==="last_visit");
           if(lastVisitSetting){
             let old={};
@@ -4048,7 +4899,7 @@ export default function App(){
   }
 
   async function handleSaveTarget(value){
-    setIncomeTarget(value);
+    setNetWorthTarget(parseFloat(value)||0);
     await saveSetting("net_worth_target",value);
   }
 
@@ -4058,11 +4909,152 @@ export default function App(){
     if(price){setBtcPrice(price);showToast(`₿ ${cu(price)} · FX updated`);}
     if(fx)setRates(fx);
     setBtcLoading(false);
+    if(positions.length>0)refreshQuotes(true); // same tap refreshes equities too
   }
 
+  // ── Holdings ──
+  // Quantity and basis are derived from each holding's transactions, so every
+  // mutation re-runs computeHolding rather than writing a stored total.
+  function withCalc(p){ return{...p,calc:computeHolding(p.lots,p.multiplier)}; }
+
+  async function refreshQuotes(silent){
+    const wanted=quotableSymbols(positions);
+    if(wanted.length===0){ if(!silent)showToast("Nothing to price — all manual or closed"); return; }
+    if(!STOCK_API_KEY){ if(!silent)showToast("⚠ No price feed key set"); return; }
+    setQuoteLoading(true);
+    try{
+      const q=await fetchQuotes(wanted);
+      const hits=Object.keys(q);
+      if(hits.length===0){ if(!silent)showToast("⚠ No prices returned"); }
+      else{
+        setPositions(cur=>cur.map(p=>{
+          const hit=q[quoteSymbolFor(p)];
+          return hit?withCalc({...p,lastPrice:hit.price,prevClose:hit.prevClose,dayChangePct:hit.dayChangePct}):p;
+        }));
+        setQuotesAt(new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}));
+        if(!silent)showToast(`✓ ${hits.length} price${hits.length!==1?"s":""} updated`);
+        for(const p of positions){
+          const hit=q[quoteSymbolFor(p)];
+          if(hit)try{ await sb(`positions?id=eq.${p.id}`,"PATCH",{last_price:hit.price,prev_close:hit.prevClose,last_price_at:new Date().toISOString()}); }catch{}
+        }
+      }
+    }catch(e){ console.error("Quote refresh error:",e); if(!silent)showToast("⚠ Price fetch failed"); }
+    setQuoteLoading(false);
+  }
+
+  function positionRow(meta){
+    return{ticker:meta.ticker,name:meta.name||null,asset_type:meta.assetType||"stock",
+      currency:meta.currency||"USD",broker:meta.broker||null,multiplier:meta.multiplier||1,
+      quote_symbol:meta.quoteSymbol||null,manual_price:meta.manualPrice,note:meta.note||null};
+  }
+  function lotRow(positionId,lot){
+    return{position_id:positionId,kind:lot.kind==="sell"?"sell":"buy",qty:lot.qty,
+      price:lot.price,fee:lot.fee||0,trade_date:lot.tradeDate||null,note:lot.note||null};
+  }
+
+  async function addPosition(meta,openingLot,cashAccount){
+    const row=positionRow(meta);
+    // Only reach for a quote when this holding actually wants one
+    const needsQuote=meta.manualPrice==null||meta.manualPrice==="";
+    const quote=needsQuote?await fetchQuote(quoteSymbolFor(meta)):null;
+    if(quote){ row.last_price=quote.price;row.prev_close=quote.prevClose;row.last_price_at=new Date().toISOString(); }
+    let id=null;
+    try{
+      const saved=await sb("positions","POST",row);
+      id=saved&&saved[0]?saved[0].id:null;
+    }catch(e){ console.error("Add holding error:",e); }
+    const local={...meta,id:id!=null?id:Date.now(),lots:[],
+      lastPrice:quote?quote.price:null,prevClose:quote?quote.prevClose:null,
+      dayChangePct:quote?quote.dayChangePct:null};
+    if(openingLot&&openingLot.qty>0){
+      let lotId=Date.now();
+      if(id!=null){
+        try{ const sl=await sb("position_lots","POST",lotRow(id,openingLot)); if(sl&&sl[0])lotId=sl[0].id; }
+        catch(e){ console.error("Add opening transaction error:",e); }
+      }
+      local.lots=[{...openingLot,id:lotId}];
+      if(cashAccount){
+        const mv=cashDeltaFor(meta,openingLot,cashAccount);
+        if(mv)await applyCashMovement(mv.account,mv.delta,mv.currency,
+          `Bought ${Math.abs(parseFloat(openingLot.qty)||0)} ${meta.ticker}`,openingLot.tradeDate);
+      }
+    }
+    setPositions(cur=>[withCalc(local),...cur]);
+    if(id==null)showToast("⚠ Saved locally — check the positions tables exist");
+    else showToast(quote?`✓ ${meta.ticker} added · ${fmtNative(quote.price,meta.currency)}`:`✓ ${meta.ticker} added`);
+  }
+
+  async function updatePosition(id,meta){
+    setPositions(cur=>cur.map(p=>p.id===id?withCalc({...p,...meta}):p));
+    try{ await sb(`positions?id=eq.${id}`,"PATCH",positionRow(meta)); showToast("✓ Holding updated"); }
+    catch(e){ console.error("Update holding error:",e); showToast("⚠ Update failed to sync"); }
+  }
+
+  async function deletePosition(id){
+    const prev=positions;
+    setPositions(cur=>cur.filter(p=>p.id!==id));
+    try{
+      try{ await sb(`position_lots?position_id=eq.${id}`,"DELETE"); }catch{}
+      await sb(`positions?id=eq.${id}`,"DELETE");
+      showToast("Holding removed");
+    }catch(e){ console.error("Delete holding error:",e); setPositions(prev); showToast("⚠ Could not delete"); }
+  }
+
+  // Moves brokerage cash and leaves a trail in the ledger. Typed as a transfer
+  // so buying a stock never shows up as spending, and selling never as income —
+  // the money changed shape, it didn't leave or arrive.
+  async function applyCashMovement(account,deltaNative,currency,label,date){
+    if(!account||!Object.prototype.hasOwnProperty.call(wallets,account)||!deltaNative)return;
+    // Not clamped at zero: a broker can run you negative, and hiding that
+    // would make the balance a lie.
+    const newW={...wallets,[account]:(wallets[account]||0)+deltaNative};
+    const when=date||new Date().toISOString().slice(0,10);
+    try{
+      const saved=await sb("ledger","POST",{type:"transfer",category:"Transfer",tag:null,
+        amount:Math.abs(deltaNative),currency,account,label,date:when,btc_price_at_time:null});
+      const id=saved&&saved[0]?saved[0].id:Date.now()+Math.random();
+      setLedger(l=>[{id,type:"transfer",category:"Transfer",amount:Math.abs(deltaNative),currency,account,label,date:when},...l]);
+    }catch(e){ console.error("Cash movement ledger error:",e); }
+    await saveWallets(newW);
+  }
+
+  function cashDeltaFor(holding,lot,cashAccount){
+    const acc=BROKER_CASH.find(b=>b.key===cashAccount);
+    if(!acc)return null;
+    const mult=parseFloat(holding.multiplier)||1;
+    const grossNative=(parseFloat(lot.qty)||0)*(parseFloat(lot.price)||0)*mult;
+    const fee=parseFloat(lot.fee)||0;
+    // A buy costs gross + fee; a sell returns gross − fee
+    const native=lot.kind==="sell"?(grossNative-fee):(grossNative+fee);
+    const inCash=convertAmount(native,holding.currency||"USD",acc.currency,rates,btcPrice);
+    return{account:acc.key,currency:acc.currency,delta:lot.kind==="sell"?inCash:-inCash};
+  }
+
+  async function addLot(positionId,lot,cashAccount){
+    const holding=positions.find(p=>p.id===positionId);
+    let lotId=Date.now();
+    try{ const saved=await sb("position_lots","POST",lotRow(positionId,lot)); if(saved&&saved[0])lotId=saved[0].id; }
+    catch(e){ console.error("Add transaction error:",e); showToast("⚠ Saved locally only"); }
+    setPositions(cur=>cur.map(p=>p.id===positionId?withCalc({...p,lots:[...(p.lots||[]),{...lot,id:lotId}]}):p));
+    if(holding&&cashAccount){
+      const mv=cashDeltaFor(holding,lot,cashAccount);
+      if(mv)await applyCashMovement(mv.account,mv.delta,mv.currency,
+        `${lot.kind==="sell"?"Sold":"Bought"} ${Math.abs(parseFloat(lot.qty)||0)} ${holding.ticker}`,lot.tradeDate);
+    }
+    showToast(lot.kind==="sell"?"✓ Sale logged — basis re-averaged":"✓ Buy logged — basis re-averaged");
+  }
+
+  async function deleteLot(positionId,lotId){
+    const prev=positions;
+    setPositions(cur=>cur.map(p=>p.id===positionId?withCalc({...p,lots:(p.lots||[]).filter(l=>l.id!==lotId)}):p));
+    try{ await sb(`position_lots?id=eq.${lotId}`,"DELETE"); }
+    catch(e){ console.error("Delete transaction error:",e); setPositions(prev); showToast("⚠ Could not delete"); }
+  }
+
+
   const autoCostBasis = computeAvgCostBasis(ledger, btcCostBasis);
-  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,lastReconciled,netWorthTarget,lastVisitBanner:bannerDismissed?null:lastVisitBanner};
-  const nw=netWorth(wallets,btcPrice,rates);
+  const st={wallets,rates,btcCostBasis:autoCostBasis,ledger,orders,positions,lastReconciled,netWorthTarget,lastVisitBanner:bannerDismissed?null:lastVisitBanner};
+  const nw=netWorth(wallets,btcPrice,rates,positions);
 
   if(dbLoading)return(
     <div style={{background:T.white,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:T.sans}}>
@@ -4152,7 +5144,7 @@ export default function App(){
         {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget} goals={goals}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
-        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile} biometricAvailable={biometricAvailable} biometricRegistered={biometricRegistered} onEnableBiometric={enableBiometric} onDisableBiometric={disableBiometric}/>}
+        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile} biometricAvailable={biometricAvailable} biometricRegistered={biometricRegistered} onEnableBiometric={enableBiometric} onDisableBiometric={disableBiometric} positions={positions} quotesAt={quotesAt} quoteLoading={quoteLoading} onAddPosition={addPosition} onUpdatePosition={updatePosition} onDeletePosition={deletePosition} onAddLot={addLot} onDeleteLot={deleteLot} onRefreshQuotes={()=>refreshQuotes(false)}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} planned={planned} onAddPlanned={addPlanned} onTogglePlanned={togglePlanned} onDeletePlanned={deletePlanned}/>}
         {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
         {view==="Goals"&&<Goals goals={goals} onAdd={addGoal} onUpdate={updateGoal} onComplete={completeGoal} onDelete={deleteGoal} scratchpad={scratchpad} onSaveScratchpad={saveScratchpad}/>}
