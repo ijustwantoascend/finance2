@@ -3379,7 +3379,7 @@ function Positions({positions,rates,bp,wallets,quotesAt,quoteLoading,onAdd,onUpd
   );
 }
 
-function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvailable,biometricRegistered,onEnableBiometric,onDisableBiometric,positions,quotesAt,quoteLoading,onAddPosition,onUpdatePosition,onDeletePosition,onAddLot,onDeleteLot,onRefreshQuotes}){
+function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvailable,biometricRegistered,onEnableBiometric,onDisableBiometric,positions,quotesAt,quoteLoading,onAddPosition,onUpdatePosition,onDeletePosition,onAddLot,onDeleteLot,onRefreshQuotes,schemaWarn}){
   const{wallets:w,rates,btcCostBasis}=st;
   const nw=netWorth(w,bp,rates,positions);
   const btcTotal=totalBTC(w);
@@ -3404,6 +3404,10 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
           </span>}/>
         <div style={{padding:"10px 20px 4px",fontSize:10,color:T.textM,fontFamily:T.mono,lineHeight:1.6}}>
           Uninvested money sitting at the broker. Fund it with a transfer from a bank account below; buying a holding draws it down, selling tops it back up.
+        </div>
+        <div style={{margin:"8px 20px 10px",padding:"9px 12px",background:"#F0FDF4",border:"1px solid #BBF7D0",borderRadius:5,fontSize:10,color:T.green,fontFamily:T.mono,lineHeight:1.7}}>
+          In net worth right now: <b>{cu(brokerCashUSD(w,rates))}</b> cash + <b>{cu(equityVal)}</b> holdings = <b>{cu(brokerCashUSD(w,rates)+equityVal)}</b>
+          <br/><span style={{color:T.textM}}>Total net worth {cu(nw)} · of which {nw>0?((brokerCashUSD(w,rates)+equityVal)/nw*100).toFixed(1):"0.0"}% is brokerage</span>
         </div>
         {BROKER_CASH.map(b=>(
           <div key={b.key} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 20px",borderBottom:`1px solid #F9FAFB`}}>
@@ -3471,8 +3475,10 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
           {label:"USDT (Coinbase + MetaMask)",val:totalUSDT(w),display:cu(totalUSDT(w)),color:T.green},
           {label:"SGD (UOB + Revolut)",val:((w.uob_sgd||0)+(w.revolut_sgd||0))/rates.USDSGD,display:csg((w.uob_sgd||0)+(w.revolut_sgd||0)),color:T.blue},
           {label:"IDR (BCA)",val:(w.bca_idr||0)/(rates.USDIDR||16200),display:cid(w.bca_idr),color:T.purple},
-          ...(brokerCashUSD(w,rates)?[{label:"Brokerage cash (uninvested)",val:brokerCashUSD(w,rates),display:BROKER_CASH.filter(b=>w[b.key]).map(b=>fmtNative(w[b.key],b.currency)).join(" + "),color:"#0F766E"}]:[]),
-          ...(equityVal?[{label:`Holdings (${openHoldings(positions).map(p=>p.ticker).join(", ")})`,val:equityVal,display:`${openHoldings(positions).length} position${openHoldings(positions).length!==1?"s":""}`,color:T.blue}]:[]),
+          {label:"Brokerage cash (uninvested)",val:brokerCashUSD(w,rates),
+           display:BROKER_CASH.filter(b=>w[b.key]).map(b=>fmtNative(w[b.key],b.currency)).join(" + ")||"none",color:"#0F766E"},
+          {label:openHoldings(positions).length?`Holdings (${openHoldings(positions).map(p=>p.ticker).join(", ")})`:"Holdings",
+           val:equityVal,display:openHoldings(positions).length?`${openHoldings(positions).length} position${openHoldings(positions).length!==1?"s":""}`:"none",color:T.blue},
         ].map(r=>(
           <div key={r.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 20px",borderBottom:`1px solid #F9FAFB`}}>
             <div>
@@ -3483,12 +3489,20 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
           </div>
         ))}
         <div style={{display:"flex",justifyContent:"space-between",padding:"14px 20px"}}>
-          <span style={{fontSize:14,fontWeight:700,color:T.text,fontFamily:T.sans}}>Total</span>
+          <div>
+            <span style={{fontSize:14,fontWeight:700,color:T.text,fontFamily:T.sans}}>Total</span>
+            <div style={{fontSize:9,color:T.textD,fontFamily:T.mono,marginTop:3}}>crypto + banks + brokerage cash + holdings</div>
+          </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:18,fontWeight:800,color:T.text,fontFamily:T.sans}}>{cu(nw)}</div>
             <div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>{csg(nw*rates.USDSGD)} · {cid(nw*(rates.USDIDR||16200))}</div>
           </div>
         </div>
+        {(schemaWarn&&schemaWarn.lots)&&(
+          <div style={{padding:"11px 20px",background:"#FEF2F2",borderTop:`1px solid #FECACA`,fontSize:10,color:T.red,fontFamily:T.mono,lineHeight:1.7}}>
+            {schemaWarn.lots&&<>Holding transactions couldn't be loaded, so every holding computes to zero and drops out of this total — run <b>holdings_tables.sql</b>.</>}
+          </div>
+        )}
       </Card>
       <Card>
         <CardHeader title="Transfer Between Accounts"/>
@@ -4275,6 +4289,10 @@ export default function App(){
   const[goals,setGoals]=useState([]);
   const[scratchpad,setScratchpad]=useState("");
   const[positions,setPositions]=useState([]);
+  // Which columns the wallets row actually has, and whether the holdings
+  // tables answered. A missing column used to fail every save in silence.
+  const[walletCols,setWalletCols]=useState(null);
+  const[schemaWarn,setSchemaWarn]=useState({brokerCash:false,lots:false});
   const[quotesAt,setQuotesAt]=useState(null);
   const[quoteLoading,setQuoteLoading]=useState(false);
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
@@ -4362,6 +4380,9 @@ export default function App(){
         if(walletData&&walletData[0]){
           const wd=walletData[0];
           setWalletRowId(wd.id);
+          setWalletCols(Object.keys(wd));
+          // If the column isn't on the row, brokerage cash has nowhere to live
+          // Brokerage cash lives in settings now, so a missing column is fine.
           finalWallets={coinbase_btc:parseFloat(wd.coinbase_btc)||0,metamask_btc:parseFloat(wd.metamask_btc)||0,coinbase_usdt:parseFloat(wd.coinbase_usdt)||0,metamask_usdt:parseFloat(wd.metamask_usdt)||0,uob_sgd:parseFloat(wd.uob_sgd)||0,revolut_sgd:parseFloat(wd.revolut_sgd)||0,bca_idr:parseFloat(wd.bca_idr)||0,broker_usd:parseFloat(wd.broker_usd)||0,broker_sgd:parseFloat(wd.broker_sgd)||0};
           setWallets(finalWallets);
         }
@@ -4391,8 +4412,13 @@ export default function App(){
             // Transactions live in their own table and are grouped onto each
             // holding; quantity and basis are derived, never stored.
             let lotData=[];
-            try{ lotData=await sb("position_lots?order=trade_date.asc")||[]; }
-            catch(lotErr){ console.error("Lots load error (table may not exist yet):",lotErr); }
+            try{ lotData=await sb("position_lots?order=trade_date.asc")||[]; setSchemaWarn(x=>({...x,lots:false})); }
+            catch(lotErr){
+              console.error("Lots load error (table may not exist yet):",lotErr);
+              // Without transactions every holding computes to zero quantity,
+              // which would quietly drop it out of net worth.
+              setSchemaWarn(x=>({...x,lots:true}));
+            }
             const lotsByPos={};
             lotData.forEach(l=>{
               const k=String(l.position_id);
@@ -4453,6 +4479,13 @@ export default function App(){
           if(s.key==="last_reconciled") setLastReconciled(s.value);
           if(s.key==="net_worth_target") setNetWorthTarget(parseFloat(s.value)||100000);
           if(s.key==="scratchpad") setScratchpad(s.value||"");
+          if(s.key==="broker_cash"){
+            try{
+              const bc=JSON.parse(s.value)||{};
+              finalWallets={...finalWallets,broker_usd:parseFloat(bc.usd)||0,broker_sgd:parseFloat(bc.sgd)||0};
+              setWallets(w=>({...w,broker_usd:parseFloat(bc.usd)||0,broker_sgd:parseFloat(bc.sgd)||0}));
+            }catch{}
+          }
         });
 
         // ── Since last checked ──
@@ -4548,10 +4581,27 @@ export default function App(){
 
   async function saveWallets(newW){
     setWallets(newW);
+    // Sending a column the table doesn't have makes Supabase reject the WHOLE
+    // row, so a single missing column would stop every balance from saving.
+    // Send only the columns the loaded row actually proved exist.
+    const payload={};
+    Object.keys(newW).forEach(k=>{ if(!walletCols||walletCols.includes(k))payload[k]=newW[k]; });
+    const dropped=Object.keys(newW).filter(k=>walletCols&&!walletCols.includes(k)&&newW[k]);
+    payload.updated_at=new Date().toISOString();
     try{
-      if(walletRowId){await sb(`wallets?id=eq.${walletRowId}`,"PATCH",{...newW,updated_at:new Date().toISOString()});}
-      else{const res=await sb("wallets","POST",{...newW,updated_at:new Date().toISOString()});if(res&&res[0])setWalletRowId(res[0].id);}
-    }catch(e){console.error("Wallet save error:",e);}
+      if(walletRowId){await sb(`wallets?id=eq.${walletRowId}`,"PATCH",payload);}
+      else{const res=await sb("wallets","POST",payload);if(res&&res[0])setWalletRowId(res[0].id);}
+      // Brokerage cash is ALSO kept in settings, which needs no schema change.
+      // That makes it survive whether or not the broker_* columns exist, and
+      // settings is what we read back on load.
+      const brokerChanged=(newW.broker_usd||0)!==(wallets.broker_usd||0)||(newW.broker_sgd||0)!==(wallets.broker_sgd||0);
+      if(brokerChanged||dropped.length){
+        await saveSetting("broker_cash",JSON.stringify({usd:newW.broker_usd||0,sgd:newW.broker_sgd||0}));
+      }
+    }catch(e){
+      console.error("Wallet save error:",e);
+      showToast("⚠ Balances didn't save — check console");
+    }
   }
 
   async function saveSetting(key,value){
@@ -5144,7 +5194,7 @@ export default function App(){
         {view==="Calendar" &&<CalendarView st={st} bp={btcPrice} onSaveTarget={handleSaveTarget} goals={goals}/>}
         {view==="Orders"   &&<Orders st={st} bp={btcPrice} onUpdateOrder={updateOrder} onAddOrder={addOrder} onDeleteOrder={deleteOrder}/>}
         {view==="Analytics"&&<Analytics st={st} bp={btcPrice}/>}
-        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile} biometricAvailable={biometricAvailable} biometricRegistered={biometricRegistered} onEnableBiometric={enableBiometric} onDisableBiometric={disableBiometric} positions={positions} quotesAt={quotesAt} quoteLoading={quoteLoading} onAddPosition={addPosition} onUpdatePosition={updatePosition} onDeletePosition={deletePosition} onAddLot={addLot} onDeleteLot={deleteLot} onRefreshQuotes={()=>refreshQuotes(false)}/>}
+        {view==="Wallets"  &&<Wallets st={st} bp={btcPrice} onUpdate={handleUpdate} onTransfer={applyTransactions} showToast={showToast} onReconcile={handleReconcile} biometricAvailable={biometricAvailable} biometricRegistered={biometricRegistered} onEnableBiometric={enableBiometric} onDisableBiometric={disableBiometric} positions={positions} schemaWarn={schemaWarn} quotesAt={quotesAt} quoteLoading={quoteLoading} onAddPosition={addPosition} onUpdatePosition={updatePosition} onDeletePosition={deletePosition} onAddLot={addLot} onDeleteLot={deleteLot} onRefreshQuotes={()=>refreshQuotes(false)}/>}
         {view==="Budget"&&<Budget st={st} bp={btcPrice} budgets={budgets} onSaveBudgets={saveBudgets} supplies={supplies} planned={planned} onAddPlanned={addPlanned} onTogglePlanned={togglePlanned} onDeletePlanned={deletePlanned}/>}
         {view==="Inventory"&&<SupplyTracker supplies={supplies} onAdd={addSupply} onRestock={restockSupply} onDelete={deleteSupply} onToggleInUse={toggleSupplyInUse} rates={rates} bp={btcPrice}/>}
         {view==="Goals"&&<Goals goals={goals} onAdd={addGoal} onUpdate={updateGoal} onComplete={completeGoal} onDelete={deleteGoal} scratchpad={scratchpad} onSaveScratchpad={saveScratchpad}/>}
