@@ -3498,9 +3498,13 @@ function Wallets({st,bp,onUpdate,onTransfer,showToast,onReconcile,biometricAvail
             <div style={{fontSize:10,color:T.textD,marginTop:3,fontFamily:T.mono}}>{csg(nw*rates.USDSGD)} · {cid(nw*(rates.USDIDR||16200))}</div>
           </div>
         </div>
-        {(schemaWarn&&schemaWarn.lots)&&(
+        {(schemaWarn&&(schemaWarn.lots||schemaWarn.positions))&&(
           <div style={{padding:"11px 20px",background:"#FEF2F2",borderTop:`1px solid #FECACA`,fontSize:10,color:T.red,fontFamily:T.mono,lineHeight:1.7}}>
-            {schemaWarn.lots&&<>Holding transactions couldn't be loaded, so every holding computes to zero and drops out of this total — run <b>holdings_tables.sql</b>.</>}
+            {schemaWarn.positions&&<>The holdings table couldn't be read — run <b>holdings_tables.sql</b>.<br/></>}
+            {schemaWarn.lots&&<>Holding transactions couldn't be loaded, so every holding computes to zero and drops out of this total — run <b>holdings_tables.sql</b>.<br/></>}
+            {(schemaWarn.lotsMsg||schemaWarn.positionsMsg)&&(
+              <span style={{color:T.textM,wordBreak:"break-word"}}>Database said: {schemaWarn.lotsMsg||schemaWarn.positionsMsg}</span>
+            )}
           </div>
         )}
       </Card>
@@ -4292,7 +4296,7 @@ export default function App(){
   // Which columns the wallets row actually has, and whether the holdings
   // tables answered. A missing column used to fail every save in silence.
   const[walletCols,setWalletCols]=useState(null);
-  const[schemaWarn,setSchemaWarn]=useState({brokerCash:false,lots:false});
+  const[schemaWarn,setSchemaWarn]=useState({lots:false,lotsMsg:"",positions:false,positionsMsg:""});
   const[quotesAt,setQuotesAt]=useState(null);
   const[quoteLoading,setQuoteLoading]=useState(false);
   const[wallets,setWallets]=useState(DEFAULT_WALLETS);
@@ -4412,12 +4416,13 @@ export default function App(){
             // Transactions live in their own table and are grouped onto each
             // holding; quantity and basis are derived, never stored.
             let lotData=[];
-            try{ lotData=await sb("position_lots?order=trade_date.asc")||[]; setSchemaWarn(x=>({...x,lots:false})); }
+            try{ lotData=await sb("position_lots?order=trade_date.asc")||[]; setSchemaWarn(x=>({...x,lots:false,lotsMsg:""})); }
             catch(lotErr){
               console.error("Lots load error (table may not exist yet):",lotErr);
               // Without transactions every holding computes to zero quantity,
-              // which would quietly drop it out of net worth.
-              setSchemaWarn(x=>({...x,lots:true}));
+              // which would quietly drop it out of net worth. Keep the real
+              // message — guessing at the cause wasted days.
+              setSchemaWarn(x=>({...x,lots:true,lotsMsg:String(lotErr&&lotErr.message||lotErr).slice(0,300)}));
             }
             const lotsByPos={};
             lotData.forEach(l=>{
@@ -4465,7 +4470,10 @@ export default function App(){
               }
             }
           }
-        }catch(posErr){ console.error("Positions load error (table may not exist yet):",posErr); }
+        }catch(posErr){
+          console.error("Positions load error (table may not exist yet):",posErr);
+          setSchemaWarn(x=>({...x,positions:true,positionsMsg:String(posErr&&posErr.message||posErr).slice(0,300)}));
+        }
 
         try{
           const goalsData=await sb("goals?order=created_at.desc");
